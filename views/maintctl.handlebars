@@ -471,6 +471,12 @@ function renderDevices() {
   var showHidden = document.getElementById('devShowHidden').checked;
 
   var list = allDevices.slice();
+  // Pseudo-devices internes (HTREE\ROOT\0, etc.) : pas de classe, pas de nom,
+  // jamais affichés dans le vrai gestionnaire.
+  list = list.filter(function (d) {
+    if (d.Class || d.FriendlyName) return true;
+    return false;
+  });
   if (!showGhosts) list = list.filter(function (d) { return !isGhost(d); });
   if (!showHidden) list = list.filter(function (d) { return !HIDDEN_BY_DEFAULT_CLASSES[d.Class]; });
   if (errorsOnly) list = list.filter(isRealError);
