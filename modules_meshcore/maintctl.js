@@ -152,7 +152,8 @@ function buildPsDevList(outPath) {
         + '    }'
         + '  };'
         + '  $json = $devs | ConvertTo-Json -Compress;'
-        + '  [System.IO.File]::WriteAllText(\'' + outPath.replace(/'/g, "''") + '\', $json, [System.Text.Encoding]::UTF8);'
+        + '  $utf8NoBom = New-Object System.Text.UTF8Encoding($false);'
+        + '  [System.IO.File]::WriteAllText(\'' + outPath.replace(/'/g, "''") + '\', $json, $utf8NoBom);'
         + '  Write-Host "OK";'
         + '} catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
 }

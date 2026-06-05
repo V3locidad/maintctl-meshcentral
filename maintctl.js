@@ -119,7 +119,10 @@ module.exports.maintctl = function (parent) {
                 // Parsing JSON côté serveur (Node = parser robuste).
                 if (!err && command.devicesJson) {
                     try {
-                        const parsed = JSON.parse(command.devicesJson);
+                        // Strip BOM UTF-8 si présent.
+                        let raw = command.devicesJson;
+                        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                        const parsed = JSON.parse(raw);
                         devices = Array.isArray(parsed) ? parsed : [parsed];
                     } catch (e) {
                         err = 'parse JSON (server): ' + e.message;
