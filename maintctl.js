@@ -114,10 +114,23 @@ module.exports.maintctl = function (parent) {
                 if (!entry || entry.kind !== 'devList') return;
                 delete pendingDispatches[did];
                 const nid = entry.nodeId;
+                let devices = [];
+                let err = command.error || '';
+                // Parsing JSON côté serveur (Node = parser robuste).
+                if (!err && command.devicesJson) {
+                    try {
+                        const parsed = JSON.parse(command.devicesJson);
+                        devices = Array.isArray(parsed) ? parsed : [parsed];
+                    } catch (e) {
+                        err = 'parse JSON (server): ' + e.message;
+                    }
+                } else if (!err && Array.isArray(command.devices)) {
+                    devices = command.devices;
+                }
                 devCache[nid] = {
-                    ok: !!command.ok,
-                    error: command.error || '',
-                    devices: command.devices || [],
+                    ok: !err,
+                    error: err,
+                    devices: devices,
                     lastCheck: Date.now()
                 };
                 const waiter = devPendingWaiters[did];
@@ -126,9 +139,9 @@ module.exports.maintctl = function (parent) {
                     try {
                         waiter.res.setHeader('Content-Type', 'application/json');
                         waiter.res.end(JSON.stringify({
-                            ok: !!command.ok,
-                            error: command.error || undefined,
-                            devices: command.devices || [],
+                            ok: !err,
+                            error: err || undefined,
+                            devices: devices,
                             cached: false,
                         }));
                     } catch (e) {}

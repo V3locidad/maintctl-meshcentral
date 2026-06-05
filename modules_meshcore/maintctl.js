@@ -388,21 +388,22 @@ function doDevList(data) {
         return;
     }
     runPowerShell(PS_DEVLIST, 60 * 1000, function (ok, _bytes, log) {
-        var devices = [];
+        var raw = '';
         var err = '';
-        try {
-            var m = log.match(/MAINTCTL_JSON_START\s*([\s\S]*?)\s*MAINTCTL_JSON_END/);
-            if (m && m[1]) {
-                var parsed = JSON.parse(m[1].trim());
-                devices = Array.isArray(parsed) ? parsed : [parsed];
-            } else { err = 'no json delimiters in output'; }
-        } catch (e) { err = 'parse JSON: ' + e; }
+        var m = log.match(/MAINTCTL_JSON_START\s*([\s\S]*?)\s*MAINTCTL_JSON_END/);
+        if (m && m[1]) {
+            raw = m[1].trim();
+        } else {
+            err = 'no json delimiters in output';
+        }
+        // On laisse le parsing JSON au serveur (Duktape râle sur les gros JSON).
         reply({
             pluginaction: 'devListResult',
             dispatchId: data.dispatchId,
             ok: ok && !err,
             error: err || undefined,
-            devices: devices
+            devicesJson: raw,
+            logTail: ok ? '' : (log || '').slice(-1000)
         });
     });
 }
