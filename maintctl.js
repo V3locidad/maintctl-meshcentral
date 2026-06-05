@@ -333,7 +333,7 @@ module.exports.maintctl = function (parent) {
                 delete devPendingWaiters[did];
                 return sendJson(res, 500, { error: 'dispatch failed: ' + e.message });
             }
-            // Timeout : si pas de réponse dans 90s
+            // Timeout : si pas de réponse dans 150s
             setTimeout(() => {
                 const w = devPendingWaiters[did];
                 if (!w) return;
@@ -341,9 +341,9 @@ module.exports.maintctl = function (parent) {
                 delete pendingDispatches[did];
                 try {
                     w.res.setHeader('Content-Type', 'application/json');
-                    w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (90s)' }));
+                    w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (150s) — agent peut-être sur ancienne version (restart MeshAgent service ?), ou Get-PnpDevice trop lent' }));
                 } catch (_) {}
-            }, 90 * 1000);
+            }, 150 * 1000);
             return;
         }
 

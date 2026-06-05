@@ -342,7 +342,7 @@ function populateDevNodeSelect() {
 function loadDevices(force) {
   var nid = document.getElementById('devNodeSel').value;
   if (!nid) { alert('Choisis un poste.'); return; }
-  document.getElementById('devListBody').innerHTML = '<div class="empty">Récupération en cours… (jusqu\'à 90s)</div>';
+  document.getElementById('devListBody').innerHTML = '<div class="empty">Récupération en cours… (jusqu\'à 150s)</div>';
   document.getElementById('devSummary').style.display = 'none';
   getJson(BASE + '&action=devList&nodeId=' + encodeURIComponent(nid) + (force ? '&force=1' : ''))
     .then(function (r) {

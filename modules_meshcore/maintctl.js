@@ -133,17 +133,29 @@ var PS_DISM = ''
     + 'if ($freed -lt 0) { $freed = 0 }'
     + 'Write-Host ("RESULT:" + $freed + ":ok")';
 
-// PnP devices : on convertit en JSON compact. ConvertTo-Json par défaut
-// limite la profondeur, on monte à 5 pour récupérer les sous-objets.
-var PS_DEVLIST = ''
-    + '$ErrorActionPreference = "SilentlyContinue";'
-    + 'try {'
-    + '  $devs = Get-PnpDevice | Select-Object Status, Class, FriendlyName, InstanceId, Problem, ProblemDescription, Manufacturer;'
-    + '  $json = $devs | ConvertTo-Json -Compress -Depth 4;'
-    + '  Write-Host "MAINTCTL_JSON_START";'
-    + '  Write-Host $json;'
-    + '  Write-Host "MAINTCTL_JSON_END";'
-    + '} catch { Write-Host ("ERR: " + $_.Exception.Message) }';
+// PnP devices : on écrit le JSON dans un fichier passé en arg ($args[0]) pour
+// éviter le buffering stdout sur de gros payloads. Status est castée en
+// string (enum sinon).
+function buildPsDevList(outPath) {
+    return ''
+        + '$ErrorActionPreference = "SilentlyContinue";'
+        + 'try {'
+        + '  $devs = Get-PnpDevice | ForEach-Object {'
+        + '    [PSCustomObject]@{'
+        + '      Status = [string]$_.Status;'
+        + '      Class = [string]$_.Class;'
+        + '      FriendlyName = [string]$_.FriendlyName;'
+        + '      InstanceId = [string]$_.InstanceId;'
+        + '      Problem = [int]$_.Problem;'
+        + '      ProblemDescription = [string]$_.ProblemDescription;'
+        + '      Manufacturer = [string]$_.Manufacturer;'
+        + '    }'
+        + '  };'
+        + '  $json = $devs | ConvertTo-Json -Compress;'
+        + '  [System.IO.File]::WriteAllText(\'' + outPath.replace(/'/g, "''") + '\', $json, [System.Text.Encoding]::UTF8);'
+        + '  Write-Host "OK";'
+        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
+}
 
 // Liste des comptes à PRÉSERVER, passée à DelProf2 via /ed:<name>.
 // Pas d'espace (execFile ne quote pas) → "Default*" wildcard + skip des
@@ -387,23 +399,30 @@ function doDevList(data) {
         reply({ pluginaction: 'devListResult', dispatchId: data.dispatchId, ok: false, error: 'maintctl: Windows only' });
         return;
     }
-    runPowerShell(PS_DEVLIST, 60 * 1000, function (ok, _bytes, log) {
+    var fs = require('fs');
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var outPath = tmpRoot + '\\maintctl_dev_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.json';
+    var script = buildPsDevList(outPath);
+    runPowerShell(script, 120 * 1000, function (ok, _bytes, log) {
         var raw = '';
         var err = '';
-        var m = log.match(/MAINTCTL_JSON_START\s*([\s\S]*?)\s*MAINTCTL_JSON_END/);
-        if (m && m[1]) {
-            raw = m[1].trim();
-        } else {
-            err = 'no json delimiters in output';
+        try {
+            if (fs.existsSync(outPath)) {
+                raw = fs.readFileSync(outPath).toString();
+                try { fs.unlinkSync(outPath); } catch (_) {}
+            } else {
+                err = 'fichier JSON pas généré (PS log: ' + (log || '').slice(-300).trim() + ')';
+            }
+        } catch (e) {
+            err = 'lecture fichier JSON: ' + e;
         }
-        // On laisse le parsing JSON au serveur (Duktape râle sur les gros JSON).
         reply({
             pluginaction: 'devListResult',
             dispatchId: data.dispatchId,
             ok: ok && !err,
             error: err || undefined,
             devicesJson: raw,
-            logTail: ok ? '' : (log || '').slice(-1000)
+            logTail: (!ok || err) ? (log || '').slice(-1000) : ''
         });
     });
 }
