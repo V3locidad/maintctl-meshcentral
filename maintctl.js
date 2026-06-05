@@ -22,6 +22,8 @@ const serverState = { baseUrl: '' };
 const runs = {};                   // runId -> run cleanup
 const devCache = {};               // nodeId -> { devices, lastCheck }
 const devPendingWaiters = {};      // dispatchId -> { res, expires }
+const devDetailsWaiters = {};      // dispatchId -> { res, expires }
+const devActionWaiters = {};       // dispatchId -> { res, expires }
 
 const AGENT_TYPE = {
     1: 'Windows', 2: 'Windows', 3: 'Windows', 4: 'Windows', 5: 'Windows',
@@ -107,6 +109,50 @@ module.exports.maintctl = function (parent) {
             if (!command) return;
             if (command.pluginaction === 'pong') return;
 
+            if (command.pluginaction === 'devDetailsResult') {
+                const did = command.dispatchId;
+                if (!did) return;
+                delete pendingDispatches[did];
+                const waiter = devDetailsWaiters[did];
+                if (!waiter) return;
+                delete devDetailsWaiters[did];
+                let details = null;
+                let err = command.error || '';
+                if (!err && command.detailsJson) {
+                    try {
+                        let raw = command.detailsJson;
+                        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                        details = JSON.parse(raw);
+                    } catch (e) { err = 'parse JSON: ' + e.message; }
+                }
+                try {
+                    waiter.res.setHeader('Content-Type', 'application/json');
+                    waiter.res.end(JSON.stringify({
+                        ok: !err,
+                        error: err || undefined,
+                        details: details
+                    }));
+                } catch (e) {}
+                return;
+            }
+            if (command.pluginaction === 'devActionResult') {
+                const did = command.dispatchId;
+                if (!did) return;
+                delete pendingDispatches[did];
+                const waiter = devActionWaiters[did];
+                if (!waiter) return;
+                delete devActionWaiters[did];
+                try {
+                    waiter.res.setHeader('Content-Type', 'application/json');
+                    waiter.res.end(JSON.stringify({
+                        ok: !!command.ok,
+                        action: command.action,
+                        instanceId: command.instanceId,
+                        log: command.logTail || ''
+                    }));
+                } catch (e) {}
+                return;
+            }
             if (command.pluginaction === 'devListResult') {
                 const did = command.dispatchId;
                 if (!did) return;
@@ -305,6 +351,78 @@ module.exports.maintctl = function (parent) {
         }
 
         // ---- Gestionnaire de périphériques ----
+
+        if (action === 'devDetails') {
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            const instanceId = String((req.query && req.query.instanceId) || '');
+            if (!nodeId || !instanceId) return sendJson(res, 400, { error: 'nodeId et instanceId requis' });
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const ws = wsagents[nodeId];
+            if (!ws || typeof ws.send !== 'function') return sendJson(res, 503, { error: 'agent offline' });
+            const did = 'dd-' + crypto.randomBytes(8).toString('hex');
+            pendingDispatches[did] = { kind: 'devDetails', nodeId: nodeId, expires: Date.now() + 90 * 1000 };
+            devDetailsWaiters[did] = { res: res, expires: Date.now() + 90 * 1000 };
+            try {
+                ws.send(JSON.stringify({
+                    action: 'plugin', plugin: 'maintctl', pluginaction: 'devDetails',
+                    dispatchId: did, instanceId: instanceId
+                }));
+            } catch (e) {
+                delete pendingDispatches[did];
+                delete devDetailsWaiters[did];
+                return sendJson(res, 500, { error: 'dispatch failed: ' + e.message });
+            }
+            setTimeout(() => {
+                const w = devDetailsWaiters[did];
+                if (!w) return;
+                delete devDetailsWaiters[did];
+                delete pendingDispatches[did];
+                try {
+                    w.res.setHeader('Content-Type', 'application/json');
+                    w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (90s)' }));
+                } catch (_) {}
+            }, 90 * 1000);
+            return;
+        }
+
+        if (action === 'devAction') {
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            const instanceId = String((req.query && req.query.instanceId) || '');
+            const devAction = String((req.query && req.query.devAction) || '');
+            if (!nodeId) return sendJson(res, 400, { error: 'nodeId requis' });
+            if (['scan','enable','disable','remove'].indexOf(devAction) < 0) return sendJson(res, 400, { error: 'devAction invalide' });
+            if (devAction !== 'scan' && !instanceId) return sendJson(res, 400, { error: 'instanceId requis' });
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const ws = wsagents[nodeId];
+            if (!ws || typeof ws.send !== 'function') return sendJson(res, 503, { error: 'agent offline' });
+            const did = 'da-' + crypto.randomBytes(8).toString('hex');
+            pendingDispatches[did] = { kind: 'devAction', nodeId: nodeId, expires: Date.now() + 120 * 1000 };
+            devActionWaiters[did] = { res: res, expires: Date.now() + 120 * 1000 };
+            try {
+                ws.send(JSON.stringify({
+                    action: 'plugin', plugin: 'maintctl', pluginaction: 'devAction',
+                    dispatchId: did, instanceId: instanceId, devAction: devAction
+                }));
+            } catch (e) {
+                delete pendingDispatches[did];
+                delete devActionWaiters[did];
+                return sendJson(res, 500, { error: 'dispatch failed: ' + e.message });
+            }
+            // Invalide le cache devList du poste pour qu'un rafraîchissement
+            // après l'action remonte l'état nouveau.
+            delete devCache[nodeId];
+            setTimeout(() => {
+                const w = devActionWaiters[did];
+                if (!w) return;
+                delete devActionWaiters[did];
+                delete pendingDispatches[did];
+                try {
+                    w.res.setHeader('Content-Type', 'application/json');
+                    w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (120s)' }));
+                } catch (_) {}
+            }, 120 * 1000);
+            return;
+        }
 
         if (action === 'devList') {
             // ?nodeId=...&force=1

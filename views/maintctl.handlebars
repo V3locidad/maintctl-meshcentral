@@ -80,6 +80,25 @@
   .devItem .problem { color: #721c24; font-size: 11px; margin-left: 6px; }
   .summary { padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 8px; }
   .summary .num { font-size: 18px; font-weight: 600; margin-right: 12px; }
+  .devItem { cursor: pointer; }
+  /* Modal détails */
+  .modalBg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .modalBg.show { display: flex; }
+  .modal { background: #fff; border-radius: 6px; padding: 16px; min-width: 540px; max-width: 720px; max-height: 88vh; overflow: auto; box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+  .modal h3 { margin: 0 0 4px 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .modal .sub { color: #888; font-size: 12px; margin-bottom: 12px; }
+  .modal .field { margin: 6px 0; display: flex; gap: 8px; }
+  .modal .field .k { flex: 0 0 130px; color: #555; }
+  .modal .field .v { flex: 1; word-break: break-all; font-family: Menlo, Consolas, monospace; font-size: 12px; }
+  .modal .field .v.ids { white-space: pre-wrap; }
+  .modal .probBox { padding: 8px; border-radius: 4px; background: #fff3cd; color: #856404; margin-bottom: 12px; font-size: 12px; }
+  .modal .probBox.err { background: #f8d7da; color: #721c24; }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; border-top: 1px solid #eee; padding-top: 12px; flex-wrap: wrap; }
+  .modal .actionLeft { display: flex; gap: 8px; flex: 1; flex-wrap: wrap; }
+  .modal .actionResult { margin-top: 10px; font-size: 12px; padding: 8px; border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap; font-family: Menlo, Consolas, monospace; display: none; }
+  .modal .actionResult.show { display: block; }
+  .modal .actionResult.ok { background: #d4edda; color: #155724; }
+  .modal .actionResult.ko { background: #f8d7da; color: #721c24; }
 </style>
 </head>
 <body>
@@ -169,6 +188,26 @@
   </div>
 </div>
 
+<!-- Modal détails périphérique -->
+<div id="devModal" class="modalBg">
+  <div class="modal">
+    <h3 id="devModalTitle">Détails</h3>
+    <div class="sub" id="devModalSub"></div>
+    <div id="devModalProb" class="probBox" style="display:none"></div>
+    <div id="devModalBody"><div class="empty">Chargement…</div></div>
+    <div id="devModalResult" class="actionResult"></div>
+    <div class="actions">
+      <div class="actionLeft">
+        <button id="devActScan" title="pnputil /scan-devices : force la redétection des périphériques">Rescanner</button>
+        <button id="devActDisable">Désactiver</button>
+        <button id="devActEnable">Réactiver</button>
+        <button id="devActRemove" class="danger">Désinstaller</button>
+      </div>
+      <button id="devModalClose">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <script>
 var BASE = '/pluginadmin.ashx?pin=maintctl';
 var agents = [];
@@ -218,7 +257,54 @@ var HIDDEN_BY_DEFAULT_CLASSES = {
   Volume: true,
   LegacyDriver: true
 };
-function classLabel(c) { return CLASS_LABELS[c] || c || '(sans classe)'; }
+function classLabel(c) {
+  if (!c || c === 'Unknown') return 'Autres périphériques';
+  return CLASS_LABELS[c] || c;
+}
+
+// Codes problème PnP → explication FR (la liste vient de cfgmgr32.h)
+var CM_PROB_FR = {
+  1:  "Périphérique non configuré correctement",
+  3:  "Pilote du périphérique endommagé ou manque ressources",
+  9:  "Le matériel n'est pas reconnu correctement",
+  10: "Le périphérique ne peut pas démarrer",
+  12: "Conflit de ressources matérielles",
+  14: "Redémarrage requis pour terminer la configuration",
+  16: "Windows ne peut pas identifier toutes les ressources",
+  18: "Réinstallation des pilotes nécessaire",
+  19: "Registre endommagé pour ce périphérique",
+  21: "Suppression en cours",
+  22: "Périphérique désactivé",
+  24: "Périphérique pas connecté ou non fonctionnel (CM_PROB 24)",
+  28: "Pilote non installé pour ce périphérique",
+  29: "Désactivé dans le firmware (BIOS/UEFI)",
+  31: "Le pilote ne charge pas correctement",
+  32: "Le pilote est désactivé administrativement",
+  33: "Windows ne peut pas déterminer les ressources requises",
+  35: "Le firmware ne fournit pas assez d'informations",
+  37: "Le pilote a renvoyé une erreur",
+  38: "Une instance précédente est encore en mémoire",
+  39: "Pilote corrompu ou manquant",
+  40: "Information du pilote dans le registre invalide",
+  41: "Pilote chargé mais le périphérique est introuvable",
+  42: "Conflit avec un autre périphérique du même nom",
+  43: "Périphérique signalé en erreur par son pilote",
+  44: "Application ou service a arrêté le périphérique",
+  45: "Périphérique connu mais non connecté actuellement",
+  46: "Périphérique en attente du démarrage Windows",
+  47: "Préparé pour la suppression sûre",
+  48: "Pilote bloqué (incompatible avec cette version de Windows)",
+  49: "Hive du registre trop grand pour ajouter le périphérique",
+  50: "Échec de l'application des paramètres",
+  51: "Périphérique en attente d'un autre périphérique",
+  52: "Pilote non signé numériquement",
+  53: "Réservé pour le débogueur du noyau",
+  54: "Sera redémarré au prochain démarrage"
+};
+function problemFr(code) {
+  if (!code) return '';
+  return CM_PROB_FR[code] || ('Code problème ' + code);
+}
 function classIcon(c) {
   // émojis simples pour navigation visuelle
   var map = {
@@ -569,7 +655,144 @@ function renderDevices() {
       devCollapsed[c] = nowCollapsed;
     });
   });
+
+  // Clic sur un device → modal détails
+  Array.prototype.forEach.call(document.querySelectorAll('.devItem'), function (it) {
+    it.addEventListener('click', function () {
+      var iid = it.getAttribute('title');
+      var d = allDevices.find(function (x) { return x.InstanceId === iid; });
+      if (d) openDevModal(d);
+    });
+  });
 }
+
+// ---- MODAL DETAILS DEVICE ----
+var modalDev = null;
+
+function openDevModal(d) {
+  modalDev = d;
+  document.getElementById('devModalTitle').innerHTML =
+    statusIcon(d) + ' ' + escapeHtml(d.FriendlyName || '(sans nom)');
+  document.getElementById('devModalSub').textContent =
+    classLabel(d.Class) + (d.Manufacturer ? ' — ' + d.Manufacturer : '');
+
+  var prob = document.getElementById('devModalProb');
+  if (d.Problem) {
+    prob.className = 'probBox' + (isRealError(d) ? ' err' : '');
+    prob.style.display = 'block';
+    prob.innerHTML = '<b>CM_PROB ' + d.Problem + '</b> — ' + escapeHtml(problemFr(d.Problem))
+      + (d.ProblemDescription ? '<br><span style="color:#555">' + escapeHtml(d.ProblemDescription) + '</span>' : '');
+  } else {
+    prob.style.display = 'none';
+  }
+
+  // Détails de base (depuis devList)
+  document.getElementById('devModalBody').innerHTML = baseDetailsHtml(d)
+    + '<div class="empty" id="devLazyLoading">Chargement détails complets…</div>';
+
+  // Hide action result
+  document.getElementById('devModalResult').className = 'actionResult';
+  document.getElementById('devModalResult').textContent = '';
+
+  document.getElementById('devModal').classList.add('show');
+
+  // Lazy load détails (HardwareIDs, driver…)
+  var nid = document.getElementById('devNodeSel').value;
+  if (!nid) return;
+  var url = BASE + '&action=devDetails&nodeId=' + encodeURIComponent(nid)
+    + '&instanceId=' + encodeURIComponent(d.InstanceId);
+  getJson(url).then(function (r) {
+    var lazy = document.getElementById('devLazyLoading');
+    if (lazy) lazy.parentNode.removeChild(lazy);
+    if (!r.ok) {
+      document.getElementById('devModalBody').insertAdjacentHTML('beforeend',
+        '<div class="empty">Détails complets indispo : ' + escapeHtml(r.error || '?') + '</div>');
+      return;
+    }
+    document.getElementById('devModalBody').insertAdjacentHTML('beforeend', fullDetailsHtml(r.details));
+  }).catch(function (e) {
+    var lazy = document.getElementById('devLazyLoading');
+    if (lazy) lazy.textContent = 'Erreur : ' + e.message;
+  });
+}
+
+function baseDetailsHtml(d) {
+  function row(k, v) {
+    if (!v) return '';
+    return '<div class="field"><div class="k">' + escapeHtml(k) + '</div><div class="v">' + escapeHtml(v) + '</div></div>';
+  }
+  return row('Statut', d.Status)
+    + row('Classe', classLabel(d.Class))
+    + row('Fabricant', d.Manufacturer)
+    + row('Instance ID', d.InstanceId);
+}
+
+function fullDetailsHtml(x) {
+  if (!x) return '';
+  function row(k, v) {
+    if (!v) return '';
+    return '<div class="field"><div class="k">' + escapeHtml(k) + '</div><div class="v">' + escapeHtml(v) + '</div></div>';
+  }
+  function rowIds(k, arr) {
+    if (!arr || !arr.length) return '';
+    return '<div class="field"><div class="k">' + escapeHtml(k) + '</div><div class="v ids">' + arr.map(escapeHtml).join('\n') + '</div></div>';
+  }
+  return '<div style="margin-top:8px; border-top:1px solid #eee; padding-top:8px">'
+    + row('Service', x.Service)
+    + row('Pilote (desc)', x.DriverDesc)
+    + row('Fournisseur', x.DriverProvider)
+    + row('Version', x.DriverVersion)
+    + row('Date pilote', x.DriverDate)
+    + row('INF', x.DriverInfPath)
+    + row('Emplacement', x.LocationInfo)
+    + row('PDO', x.PdoName)
+    + rowIds('Hardware IDs', x.HardwareIds)
+    + rowIds('Compatible IDs', x.CompatibleIds)
+    + '</div>';
+}
+
+function runDevAction(action) {
+  if (!modalDev) return;
+  var nid = document.getElementById('devNodeSel').value;
+  if (!nid) return;
+  var instanceId = modalDev.InstanceId;
+  var confirmMsg = {
+    scan: 'Lancer un rescan PnP (pnputil /scan-devices) sur ce poste ?',
+    enable: 'Réactiver "' + (modalDev.FriendlyName || instanceId) + '" ?',
+    disable: 'Désactiver "' + (modalDev.FriendlyName || instanceId) + '" ?\n\nLe périphérique ne fonctionnera plus tant qu\'il n\'est pas réactivé.',
+    remove: 'Désinstaller "' + (modalDev.FriendlyName || instanceId) + '" ?\n\nWindows tentera de le redécouvrir au prochain branchement ou reboot.'
+  }[action];
+  if (!window.confirm(confirmMsg)) return;
+  var res = document.getElementById('devModalResult');
+  res.className = 'actionResult show';
+  res.textContent = 'Action en cours…';
+  var url = BASE + '&action=devAction&nodeId=' + encodeURIComponent(nid)
+    + '&devAction=' + encodeURIComponent(action)
+    + '&instanceId=' + encodeURIComponent(action === 'scan' ? '' : instanceId);
+  getJson(url).then(function (r) {
+    res.className = 'actionResult show ' + (r.ok ? 'ok' : 'ko');
+    res.textContent = (r.ok ? '✓ ' : '✗ ') + (r.action || action)
+      + (r.log ? '\n\n' + r.log : (r.error ? '\n\n' + r.error : ''));
+  }).catch(function (e) {
+    res.className = 'actionResult show ko';
+    res.textContent = '✗ ' + e.message;
+  });
+}
+
+document.getElementById('devModalClose').addEventListener('click', function () {
+  document.getElementById('devModal').classList.remove('show');
+  modalDev = null;
+});
+document.getElementById('devModal').addEventListener('click', function (e) {
+  if (e.target === this) {
+    this.classList.remove('show');
+    modalDev = null;
+  }
+});
+document.getElementById('devActScan').addEventListener('click', function () { runDevAction('scan'); });
+document.getElementById('devActEnable').addEventListener('click', function () { runDevAction('enable'); });
+document.getElementById('devActDisable').addEventListener('click', function () { runDevAction('disable'); });
+document.getElementById('devActRemove').addEventListener('click', function () { runDevAction('remove'); });
 
 // Wire up
 

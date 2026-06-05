@@ -45,6 +45,12 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'devList':
                 doDevList(args);
                 return 'devList started';
+            case 'devDetails':
+                doDevDetails(args);
+                return 'devDetails started';
+            case 'devAction':
+                doDevAction(args);
+                return 'devAction started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -393,6 +399,133 @@ function doClean(data) {
         });
     }
     next();
+}
+
+// Détails d'un device : Hardware IDs, version pilote, fournisseur, date, service.
+function buildPsDevDetails(instanceId, outPath) {
+    var idEsc = instanceId.replace(/'/g, "''");
+    return ''
+        + '$ErrorActionPreference = "SilentlyContinue";'
+        + 'try {'
+        + '  $id = \'' + idEsc + '\';'
+        + '  $d = Get-PnpDevice -InstanceId $id;'
+        + '  $props = Get-PnpDeviceProperty -InstanceId $id -ErrorAction SilentlyContinue;'
+        + '  function P($k) { ($props | Where-Object { $_.KeyName -eq $k } | Select-Object -First 1).Data }'
+        + '  $hwIds = @(P "DEVPKEY_Device_HardwareIds");'
+        + '  $compatIds = @(P "DEVPKEY_Device_CompatibleIds");'
+        + '  $obj = [PSCustomObject]@{'
+        + '    InstanceId = [string]$d.InstanceId;'
+        + '    FriendlyName = [string]$d.FriendlyName;'
+        + '    Class = [string]$d.Class;'
+        + '    Status = [string]$d.Status;'
+        + '    Problem = [int]$d.Problem;'
+        + '    ProblemDescription = [string]$d.ProblemDescription;'
+        + '    Manufacturer = [string]$d.Manufacturer;'
+        + '    HardwareIds = @($hwIds | ForEach-Object { [string]$_ });'
+        + '    CompatibleIds = @($compatIds | ForEach-Object { [string]$_ });'
+        + '    Service = [string](P "DEVPKEY_Device_Service");'
+        + '    DriverVersion = [string](P "DEVPKEY_Device_DriverVersion");'
+        + '    DriverProvider = [string](P "DEVPKEY_Device_DriverProvider");'
+        + '    DriverDate = [string](P "DEVPKEY_Device_DriverDate");'
+        + '    DriverDesc = [string](P "DEVPKEY_Device_DriverDesc");'
+        + '    DriverInfPath = [string](P "DEVPKEY_Device_DriverInfPath");'
+        + '    LocationInfo = [string](P "DEVPKEY_Device_LocationInfo");'
+        + '    PdoName = [string](P "DEVPKEY_Device_PDOName");'
+        + '  };'
+        + '  $json = $obj | ConvertTo-Json -Compress -Depth 4;'
+        + '  $utf8NoBom = New-Object System.Text.UTF8Encoding($false);'
+        + '  [System.IO.File]::WriteAllText(\'' + outPath.replace(/'/g, "''") + '\', $json, $utf8NoBom);'
+        + '  Write-Host "OK";'
+        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
+}
+
+function doDevDetails(data) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'devDetailsResult', dispatchId: data.dispatchId, ok: false, error: 'maintctl: Windows only' });
+        return;
+    }
+    var instanceId = data.instanceId || '';
+    if (!instanceId) {
+        reply({ pluginaction: 'devDetailsResult', dispatchId: data.dispatchId, ok: false, error: 'instanceId requis' });
+        return;
+    }
+    var fs = require('fs');
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var outPath = tmpRoot + '\\maintctl_dd_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.json';
+    runPowerShell(buildPsDevDetails(instanceId, outPath), 60 * 1000, function (ok, _bytes, log) {
+        var raw = '';
+        var err = '';
+        try {
+            if (fs.existsSync(outPath)) {
+                raw = fs.readFileSync(outPath).toString();
+                try { fs.unlinkSync(outPath); } catch (_) {}
+            } else {
+                err = 'fichier JSON pas généré (PS log: ' + (log || '').slice(-300).trim() + ')';
+            }
+        } catch (e) { err = 'lecture: ' + e; }
+        reply({
+            pluginaction: 'devDetailsResult',
+            dispatchId: data.dispatchId,
+            ok: ok && !err,
+            error: err || undefined,
+            detailsJson: raw,
+            logTail: (!ok || err) ? (log || '').slice(-1000) : ''
+        });
+    });
+}
+
+// Actions agir-vite sur un device.
+// action ∈ { 'scan', 'enable', 'disable', 'remove' }
+function buildPsDevAction(instanceId, action) {
+    var idEsc = instanceId.replace(/'/g, "''");
+    var body;
+    switch (action) {
+        case 'scan':
+            body = 'pnputil /scan-devices 2>&1 | Out-String | Write-Host';
+            break;
+        case 'enable':
+            body = 'Enable-PnpDevice -InstanceId \'' + idEsc + '\' -Confirm:$false -ErrorAction Stop; Write-Host "enabled"';
+            break;
+        case 'disable':
+            body = 'Disable-PnpDevice -InstanceId \'' + idEsc + '\' -Confirm:$false -ErrorAction Stop; Write-Host "disabled"';
+            break;
+        case 'remove':
+            body = 'pnputil /remove-device "' + idEsc.replace(/"/g, '""') + '" 2>&1 | Out-String | Write-Host';
+            break;
+        default:
+            body = 'Write-Host ("unknown action")';
+    }
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + 'try { ' + body + ' }'
+        + 'catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
+}
+
+function doDevAction(data) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'devActionResult', dispatchId: data.dispatchId, ok: false, error: 'maintctl: Windows only' });
+        return;
+    }
+    var action = data.devAction || '';
+    var instanceId = data.instanceId || '';
+    if (['scan','enable','disable','remove'].indexOf(action) < 0) {
+        reply({ pluginaction: 'devActionResult', dispatchId: data.dispatchId, ok: false, error: 'action invalide' });
+        return;
+    }
+    if (action !== 'scan' && !instanceId) {
+        reply({ pluginaction: 'devActionResult', dispatchId: data.dispatchId, ok: false, error: 'instanceId requis' });
+        return;
+    }
+    runPowerShell(buildPsDevAction(instanceId, action), 90 * 1000, function (ok, _bytes, log) {
+        reply({
+            pluginaction: 'devActionResult',
+            dispatchId: data.dispatchId,
+            ok: ok,
+            action: action,
+            instanceId: instanceId,
+            logTail: (log || '').slice(-1500)
+        });
+    });
 }
 
 function doDevList(data) {
