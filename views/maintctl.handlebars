@@ -51,16 +51,28 @@
   .resCell.ko { background: #f8d7da; color: #721c24; }
   .resCell.run { background: #fff3cd; color: #856404; }
   .resCell.off { background: #e2e3e5; color: #383d41; }
-  /* Devices */
-  .devList { flex: 1 1 auto; overflow: auto; border: 1px solid #ddd; border-radius: 4px; }
-  .devList table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .devList th, .devList td { padding: 5px 8px; border-bottom: 1px solid #f0f0f0; text-align: left; vertical-align: top; }
-  .devList th { background: #f4f4f4; position: sticky; top: 0; cursor: pointer; user-select: none; }
-  .devStatus { padding: 2px 6px; border-radius: 3px; font-size: 11px; display: inline-block; }
-  .devStatus.OK       { background: #d4edda; color: #155724; }
-  .devStatus.Error    { background: #f8d7da; color: #721c24; }
-  .devStatus.Disabled { background: #e2e3e5; color: #383d41; }
-  .devStatus.Unknown  { background: #fff3cd; color: #856404; }
+  /* Devices — tree view */
+  .devTree { flex: 1 1 auto; overflow: auto; border: 1px solid #ddd; border-radius: 4px; background: #fff; padding: 4px 0; font-size: 13px; }
+  .devClass { user-select: none; }
+  .devClassHdr { padding: 4px 6px 4px 8px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-radius: 3px; }
+  .devClassHdr:hover { background: #f0f4ff; }
+  .devClassHdr .caret { width: 10px; display: inline-block; color: #888; font-family: monospace; }
+  .devClassHdr .icon { width: 16px; height: 16px; display: inline-block; flex: 0 0 16px; text-align: center; line-height: 16px; font-size: 12px; }
+  .devClassHdr .name { font-weight: 500; }
+  .devClassHdr .count { color: #888; font-size: 11px; margin-left: 4px; }
+  .devClassHdr .badge-err { background: #f8d7da; color: #721c24; padding: 0 6px; border-radius: 8px; font-size: 11px; margin-left: 6px; }
+  .devChildren { padding-left: 28px; }
+  .devChildren.collapsed { display: none; }
+  .devItem { padding: 3px 6px 3px 4px; display: flex; align-items: center; gap: 6px; cursor: default; border-radius: 3px; }
+  .devItem:hover { background: #f4f6fa; }
+  .devItem .icon { width: 16px; height: 16px; display: inline-block; flex: 0 0 16px; text-align: center; line-height: 16px; font-size: 12px; }
+  .devItem .name { flex: 1 1 auto; }
+  .devItem .meta { color: #888; font-size: 11px; }
+  .devItem.err { background: #fff5f5; }
+  .devItem.err:hover { background: #ffe9e9; }
+  .devItem.disabled { color: #888; }
+  .devItem.ghost { color: #aaa; font-style: italic; }
+  .devItem .problem { color: #721c24; font-size: 11px; margin-left: 6px; }
   .summary { padding: 8px; background: #fff; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 8px; }
   .summary .num { font-size: 18px; font-weight: 600; margin-right: 12px; }
 </style>
@@ -146,7 +158,7 @@
 
   <div id="devSummary" class="summary" style="display:none"></div>
 
-  <div class="devList" id="devListBody">
+  <div class="devTree" id="devListBody">
     <div class="empty">Sélectionne un poste puis clique sur "Charger".</div>
   </div>
 </div>
@@ -158,8 +170,62 @@ var selected = {};
 var currentRunId = null;
 var pollTimer = null;
 var allDevices = [];
-var devSortKey = 'Status';
-var devSortAsc = false;
+var devCollapsed = {};  // class -> bool (true = collapsed)
+
+// Mapping classes → libellé FR + icône (emoji-ish, suffit pour repérage visuel)
+var CLASS_LABELS = {
+  AudioEndpoint: 'Entrées et sorties audio',
+  Camera: 'Caméras',
+  CDROM: 'Lecteurs de CD-ROM/DVD',
+  Computer: 'Ordinateur',
+  DiskDrive: 'Lecteurs de disque',
+  Display: 'Cartes graphiques',
+  FDC: 'Contrôleurs de disquettes',
+  FloppyDisk: 'Lecteurs de disquettes',
+  Firmware: 'Firmware',
+  HDC: 'Contrôleurs IDE ATA/ATAPI',
+  HIDClass: 'Périphériques d\'interface utilisateur',
+  Image: 'Périphériques d\'acquisition d\'image',
+  Keyboard: 'Claviers',
+  MEDIA: 'Contrôleurs audio, vidéo et jeu',
+  Monitor: 'Moniteurs',
+  Mouse: 'Souris et autres périphériques de pointage',
+  Net: 'Cartes réseau',
+  Ports: 'Ports (COM et LPT)',
+  Printer: 'Imprimantes',
+  PrintQueue: 'Files d\'impression',
+  Processor: 'Processeurs',
+  SCSIAdapter: 'Contrôleurs de stockage',
+  SecurityDevices: 'Périphériques de sécurité',
+  SoftwareComponent: 'Composants logiciels',
+  SoftwareDevice: 'Périphériques logiciels',
+  System: 'Périphériques système',
+  USB: 'Contrôleurs de bus USB',
+  USBDevice: 'Périphériques USB',
+  Volume: 'Volumes de stockage',
+  WPD: 'Périphériques portables'
+};
+function classLabel(c) { return CLASS_LABELS[c] || c || '(sans classe)'; }
+function classIcon(c) {
+  // émojis simples pour navigation visuelle
+  var map = {
+    AudioEndpoint: '🔊', Camera: '📷', CDROM: '💿', Computer: '🖥️',
+    DiskDrive: '💾', Display: '🖼️', FDC: '💾', FloppyDisk: '💾',
+    HDC: '🔌', HIDClass: '🖱️', Image: '🖨️', Keyboard: '⌨️',
+    MEDIA: '🎵', Monitor: '🖥️', Mouse: '🖱️', Net: '🌐',
+    Ports: '🔌', Printer: '🖨️', PrintQueue: '🖨️', Processor: '🧠',
+    SCSIAdapter: '💽', SecurityDevices: '🔒', SoftwareComponent: '⚙️',
+    SoftwareDevice: '⚙️', System: '⚙️', USB: '🔌', USBDevice: '🔌',
+    Volume: '💾', WPD: '📱', Firmware: '⚙️'
+  };
+  return map[c] || '📦';
+}
+function statusIcon(d) {
+  if (isRealError(d)) return '<span style="color:#e3a900" title="Erreur (problème ' + (d.Problem||'?') + ')">⚠️</span>';
+  if ((d.Status || '').toString().toLowerCase() === 'disabled') return '<span style="color:#888" title="Désactivé">⛔</span>';
+  if (isGhost(d)) return '<span style="color:#bbb" title="Non connecté (CM_PROB 45)">○</span>';
+  return '<span style="color:#2ecc40">●</span>';
+}
 
 function fmtBytes(b) {
   if (!b || b <= 0) return '—';
@@ -389,6 +455,7 @@ function renderDevices() {
   var q = (document.getElementById('devFilter').value || '').toLowerCase();
   var errorsOnly = document.getElementById('devErrorsOnly').checked;
   var showGhosts = document.getElementById('devShowGhosts').checked;
+
   var list = allDevices.slice();
   if (!showGhosts) list = list.filter(function (d) { return !isGhost(d); });
   if (errorsOnly) list = list.filter(isRealError);
@@ -398,48 +465,75 @@ function renderDevices() {
         .some(function (k) { return String(d[k] || '').toLowerCase().indexOf(q) >= 0; });
     });
   }
-  // tri par statut puis nom
-  list.sort(function (a, b) {
-    var ra = String(a[devSortKey] == null ? '' : a[devSortKey]).toLowerCase();
-    var rb = String(b[devSortKey] == null ? '' : b[devSortKey]).toLowerCase();
-    if (ra < rb) return devSortAsc ? -1 : 1;
-    if (ra > rb) return devSortAsc ? 1 : -1;
-    return 0;
+
+  // Group par Class
+  var groups = {};
+  list.forEach(function (d) {
+    var c = d.Class || '(sans classe)';
+    if (!groups[c]) groups[c] = [];
+    groups[c].push(d);
   });
-  var rows = list.map(function (d) {
-    var st = String(d.Status || 'Unknown');
-    var prob = d.Problem ? (' (CM_PROB ' + d.Problem + ')') : '';
-    return '<tr>'
-      + '<td><span class="devStatus ' + escapeHtml(st) + '">' + escapeHtml(st) + '</span></td>'
-      + '<td>' + escapeHtml(d.Class || '') + '</td>'
-      + '<td>' + escapeHtml(d.FriendlyName || '') + '</td>'
-      + '<td>' + escapeHtml(d.Manufacturer || '') + '</td>'
-      + '<td style="color:#721c24">' + escapeHtml(d.ProblemDescription || '') + prob + '</td>'
-      + '<td style="font-family:Menlo,Consolas,monospace; font-size:11px; color:#888">' + escapeHtml(d.InstanceId || '') + '</td>'
-      + '</tr>';
+  var classNames = Object.keys(groups).sort(function (a, b) {
+    return classLabel(a).localeCompare(classLabel(b), 'fr');
+  });
+
+  if (!classNames.length) {
+    document.getElementById('devListBody').innerHTML = '<div class="empty">aucun</div>';
+    return;
+  }
+
+  // Auto-expand : classes avec erreur ouvertes par défaut. Si l'utilisateur a
+  // manuellement plié/déplié, on respecte son choix (devCollapsed).
+  var html = classNames.map(function (c) {
+    var devs = groups[c].slice().sort(function (a, b) {
+      return String(a.FriendlyName || '').localeCompare(String(b.FriendlyName || ''), 'fr');
+    });
+    var nErr = devs.filter(isRealError).length;
+    var userCollapsed = (c in devCollapsed) ? devCollapsed[c] : (nErr === 0);
+    var caret = userCollapsed ? '▶' : '▼';
+
+    var items = devs.map(function (d) {
+      var cls = ['devItem'];
+      if (isRealError(d)) cls.push('err');
+      if ((d.Status || '').toString().toLowerCase() === 'disabled') cls.push('disabled');
+      if (isGhost(d)) cls.push('ghost');
+      var probTxt = '';
+      if (isRealError(d)) {
+        probTxt = ' <span class="problem">' + escapeHtml(d.ProblemDescription || ('CM_PROB ' + d.Problem)) + '</span>';
+      }
+      var manu = d.Manufacturer ? (' — ' + escapeHtml(d.Manufacturer)) : '';
+      return '<div class="' + cls.join(' ') + '" title="' + escapeHtml(d.InstanceId || '') + '">'
+        + '<span class="icon">' + statusIcon(d) + '</span>'
+        + '<span class="name">' + escapeHtml(d.FriendlyName || '(sans nom)') + '<span class="meta">' + manu + '</span></span>'
+        + probTxt
+        + '</div>';
+    }).join('');
+
+    return '<div class="devClass" data-class="' + escapeHtml(c) + '">'
+      + '<div class="devClassHdr">'
+      + '<span class="caret">' + caret + '</span>'
+      + '<span class="icon">' + classIcon(c) + '</span>'
+      + '<span class="name">' + escapeHtml(classLabel(c)) + '</span>'
+      + '<span class="count">(' + devs.length + ')</span>'
+      + (nErr ? '<span class="badge-err">' + nErr + ' en erreur</span>' : '')
+      + '</div>'
+      + '<div class="devChildren' + (userCollapsed ? ' collapsed' : '') + '">' + items + '</div>'
+      + '</div>';
   }).join('');
-  document.getElementById('devListBody').innerHTML =
-    '<table><thead><tr>'
-    + sortTh('Status', 'Statut')
-    + sortTh('Class', 'Classe')
-    + sortTh('FriendlyName', 'Nom')
-    + sortTh('Manufacturer', 'Fabricant')
-    + '<th>Problème</th>'
-    + sortTh('InstanceId', 'Instance ID')
-    + '</tr></thead><tbody>' + (rows || '<tr><td colspan="6" style="color:#aaa; font-style:italic">aucun</td></tr>') + '</tbody></table>';
-  Array.prototype.forEach.call(document.querySelectorAll('.devList th[data-k]'), function (th) {
-    th.addEventListener('click', function () {
-      var k = th.getAttribute('data-k');
-      if (devSortKey === k) devSortAsc = !devSortAsc;
-      else { devSortKey = k; devSortAsc = true; }
-      renderDevices();
+
+  document.getElementById('devListBody').innerHTML = html;
+
+  // Toggle plier/déplier
+  Array.prototype.forEach.call(document.querySelectorAll('.devClassHdr'), function (h) {
+    h.addEventListener('click', function () {
+      var c = h.parentNode.getAttribute('data-class');
+      var children = h.parentNode.querySelector('.devChildren');
+      var nowCollapsed = !children.classList.contains('collapsed');
+      children.classList.toggle('collapsed');
+      h.querySelector('.caret').textContent = nowCollapsed ? '▶' : '▼';
+      devCollapsed[c] = nowCollapsed;
     });
   });
-}
-
-function sortTh(key, label) {
-  var arrow = (devSortKey === key) ? (devSortAsc ? ' ↑' : ' ↓') : '';
-  return '<th data-k="' + key + '">' + label + arrow + '</th>';
 }
 
 // Wire up
