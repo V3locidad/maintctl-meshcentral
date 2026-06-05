@@ -99,6 +99,8 @@
   .modal .actionResult.show { display: block; }
   .modal .actionResult.ok { background: #d4edda; color: #155724; }
   .modal .actionResult.ko { background: #f8d7da; color: #721c24; }
+  .drvDelBtn { flex: 0 0 auto; padding: 2px 6px; border: 1px solid #ddd; background: #fff; border-radius: 3px; cursor: pointer; font-size: 13px; color: #888; }
+  .drvDelBtn:hover { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
 </style>
 </head>
 <body>
@@ -193,6 +195,9 @@
 <div id="panel-drivers" class="panel">
   <div class="bar">
     <button id="drvRefreshBtn">Rafraîchir</button>
+    <button id="drvUploadBtn">Déposer un .zip</button>
+    <input type="file" id="drvUploadInput" accept=".zip" style="display:none">
+    <span id="drvUploadStatus" style="font-size:11px; color:#666"></span>
     <span id="drvSelCount" class="pill">0 poste(s) sélectionné(s)</span>
     <span style="flex:1"></span>
     <span id="drvDirInfo" style="color:#888; font-size:11px"></span>
@@ -943,16 +948,66 @@ function renderDrivers() {
       + '<div class="title">' + escapeHtml(d.name) + '</div>'
       + '<div class="sub"><span class="badge">' + fmtBytes(d.size) + '</span>'
       + '<span class="badge">' + escapeHtml(fmtMtime(d.mtime)) + '</span></div>'
-      + '</div></div>';
+      + '</div>'
+      + '<button class="drvDelBtn" data-name="' + escapeHtml(d.name) + '" title="Supprimer du NAS">🗑</button>'
+      + '</div>';
   });
   body.innerHTML = html;
   Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
-    row.addEventListener('click', function () {
+    row.addEventListener('click', function (e) {
+      if (e.target.classList.contains('drvDelBtn')) return; // delete géré séparément
       selectedDriver = row.getAttribute('data-name');
       updateDrvUi();
       renderDrivers();
     });
   });
+  Array.prototype.forEach.call(body.querySelectorAll('.drvDelBtn'), function (b) {
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var name = b.getAttribute('data-name');
+      if (!window.confirm('Supprimer ' + name + ' du NAS ?\n\nCela ne touche pas les postes où ce pilote est déjà installé.')) return;
+      getJson(BASE + '&action=deleteDriver&filename=' + encodeURIComponent(name)).then(function (r) {
+        if (r.error) { alert('Erreur: ' + r.error); return; }
+        if (selectedDriver === name) { selectedDriver = ''; updateDrvUi(); }
+        refreshDrivers();
+      });
+    });
+  });
+}
+
+function uploadDriver(file) {
+  var status = document.getElementById('drvUploadStatus');
+  if (!file) return;
+  if (!/\.zip$/i.test(file.name)) { status.textContent = '⚠ .zip uniquement'; return; }
+  if (!/^[a-zA-Z0-9._-]+\.zip$/.test(file.name)) {
+    status.textContent = '⚠ nom invalide (autorisé : [a-zA-Z0-9._-]+.zip — pas d\'espace ni d\'accent)';
+    return;
+  }
+  var overwrite = 0;
+  if (availableDrivers.some(function (d) { return d.name === file.name; })) {
+    if (!window.confirm(file.name + ' existe déjà sur le NAS. Le remplacer ?')) return;
+    overwrite = 1;
+  }
+  status.textContent = 'Demande de token…';
+  getJson(BASE + '&action=requestDriverUploadToken&filename=' + encodeURIComponent(file.name) + '&overwrite=' + overwrite)
+    .then(function (r) {
+      if (r.error) { status.textContent = '⚠ ' + r.error; return null; }
+      status.textContent = 'Upload (' + fmtBytes(file.size) + ')…';
+      return fetch(r.url, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file
+      }).then(function (resp) { return resp.json(); });
+    })
+    .then(function (r2) {
+      if (!r2) return;
+      if (r2.error) { status.textContent = '⚠ ' + r2.error; return; }
+      status.textContent = '✓ ' + r2.filename + ' (' + fmtBytes(r2.size) + ')';
+      refreshDrivers();
+      setTimeout(function () { status.textContent = ''; }, 5000);
+    })
+    .catch(function (e) { status.textContent = '⚠ ' + e.message; });
 }
 
 function runDriverInstall() {
@@ -1014,6 +1069,14 @@ function renderDrvResults(run) {
 }
 
 document.getElementById('drvRefreshBtn').addEventListener('click', function () { refreshAgents().then(refreshDrivers); });
+document.getElementById('drvUploadBtn').addEventListener('click', function () {
+  document.getElementById('drvUploadInput').click();
+});
+document.getElementById('drvUploadInput').addEventListener('change', function (e) {
+  var f = e.target.files && e.target.files[0];
+  if (f) uploadDriver(f);
+  e.target.value = ''; // reset pour permettre de re-uploader le même fichier
+});
 document.getElementById('drvInstallBtn').addEventListener('click', runDriverInstall);
 document.getElementById('drvSelectAllBtn').addEventListener('click', function () {
   var onlineOnly = document.getElementById('drvOnlineOnly').checked;

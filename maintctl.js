@@ -18,6 +18,7 @@ const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
 const downloadTokens = {};         // token -> { kind, payload, expires }
+const uploadTokens = {};           // token -> { kind:'driver', filename, expires }
 
 // driversDir vient de maintctl-config.json (mêmes principes que softctl :
 // NFS/SMB monté côté serveur MC, on scanne pour les .zip). Fallback : dossier
@@ -324,8 +325,46 @@ module.exports.maintctl = function (parent) {
                 fs.createReadStream(full).pipe(res);
             } catch (e) { res.status(500).send(e.message); }
         });
+        app.put('/maintctl-upload/driver/:token', (req, res) => {
+            try {
+                const token = String(req.params.token || '');
+                const entry = uploadTokens[token];
+                if (!entry || entry.kind !== 'driver' || entry.expires < Date.now()) {
+                    return res.status(403).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'token invalide ou expiré' }));
+                }
+                delete uploadTokens[token]; // single-use
+                const dir = loadDriversDir();
+                try {
+                    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                } catch (e) {
+                    return res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'mkdir échoué (NFS read-only ?): ' + e.message }));
+                }
+                const full = path.join(dir, entry.filename);
+                const tmp = full + '.uploading';
+                const ws2 = fs.createWriteStream(tmp);
+                req.pipe(ws2);
+                ws2.on('finish', () => {
+                    try {
+                        if (fs.existsSync(full)) fs.unlinkSync(full);
+                        fs.renameSync(tmp, full);
+                        const stat = fs.statSync(full);
+                        res.set('Content-Type', 'application/json').send(JSON.stringify({ ok: true, filename: entry.filename, size: stat.size }));
+                    } catch (e) {
+                        try { fs.unlinkSync(tmp); } catch (_) {}
+                        res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'rename: ' + e.message }));
+                    }
+                });
+                ws2.on('error', (e) => {
+                    try { fs.unlinkSync(tmp); } catch (_) {}
+                    res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'write failed: ' + e.message }));
+                });
+            } catch (e) {
+                res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: e.message }));
+            }
+        });
         console.log('maintctl: endpoint /maintctl-download/delprof2/:token enregistré');
         console.log('maintctl: endpoint /maintctl-download/driver/:token enregistré (dir: ' + loadDriversDir() + ')');
+        console.log('maintctl: endpoint PUT /maintctl-upload/driver/:token enregistré');
     };
 
     obj.handleAdminReq = function (req, res, user) {
@@ -428,6 +467,31 @@ module.exports.maintctl = function (parent) {
                     .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
                 return sendJson(res, 200, { drivers: drivers, dir: dir });
             } catch (e) { return sendJson(res, 500, { error: e.message + ' (dir: ' + dir + ')' }); }
+        }
+
+        if (action === 'requestDriverUploadToken') {
+            const filename = String((req.query && req.query.filename) || '').replace(/[\\/]/g, '_').trim();
+            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(filename)) {
+                return sendJson(res, 400, { error: 'filename invalide (autorisé : [a-zA-Z0-9._-]+.zip)' });
+            }
+            const dir = loadDriversDir();
+            // On vérifie le dossier mais on ne crée pas ici (le PUT s'en charge si besoin).
+            const overwrite = String((req.query && req.query.overwrite) || '') === '1';
+            if (!overwrite && fs.existsSync(path.join(dir, filename))) {
+                return sendJson(res, 409, { error: 'fichier existe déjà — relance avec overwrite=1 pour remplacer' });
+            }
+            const token = crypto.randomBytes(24).toString('hex');
+            uploadTokens[token] = { kind: 'driver', filename: filename, expires: Date.now() + DOWNLOAD_TTL_MS };
+            return sendJson(res, 200, { token: token, url: '/maintctl-upload/driver/' + token, filename: filename });
+        }
+
+        if (action === 'deleteDriver') {
+            const filename = String((req.query && req.query.filename) || '');
+            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(filename)) return sendJson(res, 400, { error: 'filename invalide' });
+            const full = path.join(loadDriversDir(), filename);
+            if (!fs.existsSync(full)) return sendJson(res, 404, { error: 'introuvable' });
+            try { fs.unlinkSync(full); return sendJson(res, 200, { ok: true }); }
+            catch (e) { return sendJson(res, 500, { error: e.message }); }
         }
 
         if (action === 'driverInstall') {
