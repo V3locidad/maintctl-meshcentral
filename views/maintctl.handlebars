@@ -108,6 +108,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="clean">Nettoyage</div>
   <div class="tab" data-tab="devices">Périphériques</div>
+  <div class="tab" data-tab="drivers">Drivers</div>
 </div>
 
 <!-- ============ TAB NETTOYAGE ============ -->
@@ -185,6 +186,45 @@
 
   <div class="devTree" id="devListBody">
     <div class="empty">Sélectionne un poste puis clique sur "Charger".</div>
+  </div>
+</div>
+
+<!-- ============ TAB DRIVERS ============ -->
+<div id="panel-drivers" class="panel">
+  <div class="bar">
+    <button id="drvRefreshBtn">Rafraîchir</button>
+    <span id="drvSelCount" class="pill">0 poste(s) sélectionné(s)</span>
+    <span style="flex:1"></span>
+    <span id="drvDirInfo" style="color:#888; font-size:11px"></span>
+    <button id="drvInstallBtn" class="primary" disabled>Installer le driver sélectionné</button>
+  </div>
+
+  <div class="cols">
+    <div class="col">
+      <h3>Postes <span id="drvAgentsCount" class="pill">0</span><span class="spacer"></span>
+        <label style="font-weight:normal; font-size:11px">
+          <input type="checkbox" id="drvOnlineOnly" checked> en ligne uniquement
+        </label>
+        <button id="drvSelectAllBtn">Tout</button>
+        <button id="drvSelectNoneBtn">Aucun</button>
+      </h3>
+      <div class="search"><input id="drvSearchAgents" placeholder="Rechercher (nom, salle, OS)"></div>
+      <div class="body" id="drvAgentsBody"><div class="empty">Chargement…</div></div>
+    </div>
+
+    <div class="col">
+      <h3>Drivers disponibles <span id="drvCount" class="pill">0</span></h3>
+      <div class="body" id="drvList"><div class="empty">Chargement…</div></div>
+    </div>
+  </div>
+
+  <div id="drvResults" class="results">
+    <table>
+      <thead><tr>
+        <th>Poste</th><th>Statut</th><th>Étape</th><th>Pilotes installés</th><th>Reboot</th>
+      </tr></thead>
+      <tbody id="drvResultsBody"></tbody>
+    </table>
   </div>
 </div>
 
@@ -814,6 +854,186 @@ document.getElementById('selectNoneBtn').addEventListener('click', function () {
 });
 document.getElementById('searchAgents').addEventListener('input', renderAgents);
 document.getElementById('onlineOnly').addEventListener('change', renderAgents);
+
+// ---- DRIVERS ----
+var availableDrivers = [];
+var selectedDriver = '';
+var drvSelected = {}; // sélection propre à l'onglet Drivers (évite confusion avec Nettoyage)
+var drvRunId = null;
+var drvPollTimer = null;
+
+function fmtMtime(ms) {
+  if (!ms) return '';
+  var d = new Date(ms);
+  return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderDrvAgents() {
+  var onlineOnly = document.getElementById('drvOnlineOnly').checked;
+  var q = (document.getElementById('drvSearchAgents').value || '').toLowerCase();
+  var filtered = agents.filter(function (a) {
+    if (onlineOnly && !a.online) return false;
+    if (a.family && a.family !== 'Windows') return false;
+    if (!q) return true;
+    return (a.name || '').toLowerCase().indexOf(q) >= 0
+      || (a.mesh || '').toLowerCase().indexOf(q) >= 0
+      || (a.os || '').toLowerCase().indexOf(q) >= 0;
+  });
+  var body = document.getElementById('drvAgentsBody');
+  document.getElementById('drvAgentsCount').textContent = filtered.length + ' / ' + agents.length;
+  if (!filtered.length) { body.innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
+  var html = '';
+  filtered.forEach(function (a) {
+    var sel = !!drvSelected[a.id];
+    html += '<div class="row' + (sel ? ' selected' : '') + '" data-id="' + a.id + '">'
+      + '<input type="checkbox" ' + (sel ? 'checked' : '') + '>'
+      + '<span class="statusDot ' + (a.online ? 'on' : 'off') + '"></span>'
+      + '<div class="main">'
+      + '<div class="title">' + escapeHtml(a.name) + '</div>'
+      + '<div class="sub"><span class="badge">' + escapeHtml(a.mesh || '?') + '</span>'
+      + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span></div>'
+      + '</div></div>';
+  });
+  body.innerHTML = html;
+  Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
+    row.addEventListener('click', function () {
+      var id = row.getAttribute('data-id');
+      drvSelected[id] = !drvSelected[id];
+      if (!drvSelected[id]) delete drvSelected[id];
+      updateDrvUi();
+      renderDrvAgents();
+    });
+  });
+}
+
+function updateDrvUi() {
+  var n = Object.keys(drvSelected).length;
+  document.getElementById('drvSelCount').textContent = n + ' poste(s) sélectionné(s)';
+  document.getElementById('drvInstallBtn').disabled = !(n && selectedDriver);
+}
+
+function refreshDrivers() {
+  document.getElementById('drvList').innerHTML = '<div class="empty">Chargement…</div>';
+  return getJson(BASE + '&action=driverList').then(function (r) {
+    availableDrivers = r.drivers || [];
+    document.getElementById('drvDirInfo').textContent = 'Dépose tes .zip dans : ' + (r.dir || '');
+    document.getElementById('drvCount').textContent = availableDrivers.length;
+    renderDrivers();
+  }).catch(function (e) {
+    document.getElementById('drvList').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(e.message) + '</div>';
+  });
+}
+
+function renderDrivers() {
+  var body = document.getElementById('drvList');
+  if (!availableDrivers.length) {
+    body.innerHTML = '<div class="empty">Aucun .zip dans le dossier drivers du plugin. '
+      + 'Zippe un dossier de pilote (.inf + fichiers associés) et dépose le .zip sur le serveur.</div>';
+    return;
+  }
+  var html = '';
+  availableDrivers.forEach(function (d) {
+    var sel = (selectedDriver === d.name);
+    html += '<div class="row' + (sel ? ' selected' : '') + '" data-name="' + escapeHtml(d.name) + '">'
+      + '<input type="radio" name="drvPick" ' + (sel ? 'checked' : '') + '>'
+      + '<div class="main">'
+      + '<div class="title">' + escapeHtml(d.name) + '</div>'
+      + '<div class="sub"><span class="badge">' + fmtBytes(d.size) + '</span>'
+      + '<span class="badge">' + escapeHtml(fmtMtime(d.mtime)) + '</span></div>'
+      + '</div></div>';
+  });
+  body.innerHTML = html;
+  Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
+    row.addEventListener('click', function () {
+      selectedDriver = row.getAttribute('data-name');
+      updateDrvUi();
+      renderDrivers();
+    });
+  });
+}
+
+function runDriverInstall() {
+  var nodes = Object.keys(drvSelected);
+  if (!nodes.length || !selectedDriver) return;
+  var msg = 'Installer "' + selectedDriver + '" sur ' + nodes.length + ' poste(s) ?\n\n'
+    + 'pnputil /add-driver /install /subdirs sera lancé. '
+    + 'Certains drivers exigent un redémarrage pour être effectifs.';
+  if (!window.confirm(msg)) return;
+  var payload = JSON.stringify({ nodes: nodes, driver: selectedDriver });
+  getJson(BASE + '&action=driverInstall&payload=' + encodeURIComponent(payload)).then(function (r) {
+    if (r.error) { alert('Erreur: ' + r.error); return; }
+    drvRunId = r.runId;
+    document.getElementById('drvResults').style.display = 'block';
+    pollDrvRun();
+  }).catch(function (e) { alert('Erreur: ' + e.message); });
+}
+
+function pollDrvRun() {
+  if (!drvRunId) return;
+  getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(drvRunId)).then(function (run) {
+    renderDrvResults(run);
+    var allDone = Object.values(run.results).every(function (r) {
+      return r.status === 'done' || r.status === 'error' || r.status === 'offline';
+    });
+    if (!allDone) {
+      clearTimeout(drvPollTimer);
+      drvPollTimer = setTimeout(pollDrvRun, 3000);
+    }
+  }).catch(function () {
+    clearTimeout(drvPollTimer);
+    drvPollTimer = setTimeout(pollDrvRun, 5000);
+  });
+}
+
+function renderDrvResults(run) {
+  var tbody = document.getElementById('drvResultsBody');
+  var byId = {};
+  agents.forEach(function (a) { byId[a.id] = a; });
+  var rows = '';
+  Object.keys(run.results).forEach(function (nid) {
+    var r = run.results[nid];
+    var name = (byId[nid] && byId[nid].name) || nid.slice(0, 12);
+    var statusCell;
+    if (r.status === 'running') statusCell = '<span class="resCell run">en cours</span>';
+    else if (r.status === 'done') statusCell = '<span class="resCell ok">terminé</span>';
+    else if (r.status === 'offline') statusCell = '<span class="resCell off">offline</span>';
+    else statusCell = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">erreur</span>';
+    var step = r.step || '';
+    var installed = (typeof r.installed === 'number') ? String(r.installed) : '—';
+    var reboot = r.rebootRequired ? '<span class="resCell run">oui</span>' : (r.status === 'done' ? '<span class="resCell ok">non</span>' : '—');
+    rows += '<tr><td>' + escapeHtml(name) + '</td>'
+      + '<td>' + statusCell + '</td>'
+      + '<td>' + escapeHtml(step) + (r.error && r.status === 'error' ? '<div style="color:#721c24; font-size:11px">' + escapeHtml(r.error) + '</div>' : '') + '</td>'
+      + '<td>' + installed + '</td>'
+      + '<td>' + reboot + '</td></tr>';
+  });
+  tbody.innerHTML = rows;
+}
+
+document.getElementById('drvRefreshBtn').addEventListener('click', function () { refreshAgents().then(refreshDrivers); });
+document.getElementById('drvInstallBtn').addEventListener('click', runDriverInstall);
+document.getElementById('drvSelectAllBtn').addEventListener('click', function () {
+  var onlineOnly = document.getElementById('drvOnlineOnly').checked;
+  var q = (document.getElementById('drvSearchAgents').value || '').toLowerCase();
+  agents.forEach(function (a) {
+    if (onlineOnly && !a.online) return;
+    if (a.family && a.family !== 'Windows') return;
+    if (q && (a.name || '').toLowerCase().indexOf(q) < 0 && (a.mesh || '').toLowerCase().indexOf(q) < 0) return;
+    drvSelected[a.id] = true;
+  });
+  updateDrvUi(); renderDrvAgents();
+});
+document.getElementById('drvSelectNoneBtn').addEventListener('click', function () {
+  drvSelected = {}; updateDrvUi(); renderDrvAgents();
+});
+document.getElementById('drvSearchAgents').addEventListener('input', renderDrvAgents);
+document.getElementById('drvOnlineOnly').addEventListener('change', renderDrvAgents);
+
+// Charge la liste drivers + redessine quand on switch sur l'onglet
+document.querySelector('.tab[data-tab="drivers"]').addEventListener('click', function () {
+  renderDrvAgents();
+  refreshDrivers();
+});
 
 document.getElementById('devLoadBtn').addEventListener('click', function () { loadDevices(false); });
 document.getElementById('devRefreshBtn').addEventListener('click', function () { loadDevices(true); });

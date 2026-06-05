@@ -16,8 +16,9 @@ const RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 
-const pendingDispatches = {};      // dispatchId -> { kind:'clean'|'devList', runId|nodeId, expires }
-const downloadTokens = {};         // token -> { kind:'delprof2', expires }
+const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
+const downloadTokens = {};         // token -> { kind, payload, expires }
+const DRIVERS_DIR = path.join(__dirname, 'drivers');
 const serverState = { baseUrl: '' };
 const runs = {};                   // runId -> run cleanup
 const devCache = {};               // nodeId -> { devices, lastCheck }
@@ -32,9 +33,9 @@ const AGENT_TYPE = {
     11: 'Android', 12: 'iOS',
 };
 
-function newDownloadToken(kind) {
+function newDownloadToken(kind, payload) {
     const t = crypto.randomBytes(24).toString('hex');
-    downloadTokens[t] = { kind: kind, expires: Date.now() + DOWNLOAD_TTL_MS };
+    downloadTokens[t] = { kind: kind, payload: payload || null, expires: Date.now() + DOWNLOAD_TTL_MS };
     return t;
 }
 function consumeDownloadToken(t) {
@@ -198,6 +199,31 @@ module.exports.maintctl = function (parent) {
                 return;
             }
 
+            if (command.pluginaction === 'driverInstallProgress' || command.pluginaction === 'driverInstallComplete') {
+                const did2 = command.dispatchId;
+                if (!did2) return;
+                const entry2 = pendingDispatches[did2];
+                if (!entry2 || entry2.kind !== 'driverInstall') return;
+                const run2 = runs[entry2.runId];
+                if (!run2) return;
+                const r2 = run2.results[entry2.nodeId] || (run2.results[entry2.nodeId] = { status: 'running', time: Date.now() });
+                if (command.pluginaction === 'driverInstallProgress') {
+                    r2.step = command.step || '';
+                    r2.time = Date.now();
+                } else {
+                    r2.status = command.ok ? 'done' : 'error';
+                    r2.ok = !!command.ok;
+                    r2.installed = command.installed || 0;
+                    r2.rebootRequired = !!command.rebootRequired;
+                    r2.error = command.error || undefined;
+                    r2.logTail = command.logTail || '';
+                    r2.time = Date.now();
+                    delete pendingDispatches[did2];
+                }
+                saveHistory(__dir);
+                return;
+            }
+
             if (command.pluginaction !== 'cleanProgress' && command.pluginaction !== 'cleanComplete') return;
             const did = command.dispatchId;
             if (!did) return;
@@ -265,7 +291,31 @@ module.exports.maintctl = function (parent) {
                 fs.createReadStream(bin).pipe(res);
             } catch (e) { res.status(500).send(e.message); }
         });
+        app.get('/maintctl-download/driver/:token', (req, res) => {
+            try {
+                const token = String(req.params.token || '');
+                const entry = consumeDownloadToken(token);
+                if (!entry || entry.kind !== 'driver') {
+                    return res.status(403).set('Content-Type', 'text/plain').send('forbidden');
+                }
+                const file = (entry.payload && entry.payload.file) || '';
+                // Sécurité : nom de fichier strict, .zip uniquement, pas de path traversal.
+                if (!/^[a-zA-Z0-9._-]+\.zip$/.test(file)) {
+                    return res.status(400).set('Content-Type', 'text/plain').send('invalid file');
+                }
+                const full = path.join(DRIVERS_DIR, file);
+                if (!fs.existsSync(full)) {
+                    return res.status(404).set('Content-Type', 'text/plain').send('driver not found');
+                }
+                const stat = fs.statSync(full);
+                res.set('Content-Type', 'application/zip');
+                res.set('Content-Length', stat.size);
+                res.set('Content-Disposition', 'attachment; filename="' + file + '"');
+                fs.createReadStream(full).pipe(res);
+            } catch (e) { res.status(500).send(e.message); }
+        });
         console.log('maintctl: endpoint /maintctl-download/delprof2/:token enregistré');
+        console.log('maintctl: endpoint /maintctl-download/driver/:token enregistré (dir: ' + DRIVERS_DIR + ')');
     };
 
     obj.handleAdminReq = function (req, res, user) {
@@ -348,6 +398,74 @@ module.exports.maintctl = function (parent) {
             const run = runs[id];
             if (!run) return sendJson(res, 404, { error: 'run inconnu' });
             return sendJson(res, 200, run);
+        }
+
+        // ---- Bibliothèque de drivers ----
+
+        if (action === 'driverList') {
+            try {
+                if (!fs.existsSync(DRIVERS_DIR)) {
+                    try { fs.mkdirSync(DRIVERS_DIR, { recursive: true }); } catch (_) {}
+                }
+                const drivers = fs.readdirSync(DRIVERS_DIR)
+                    .filter((f) => /^[a-zA-Z0-9._-]+\.zip$/.test(f))
+                    .map((f) => {
+                        let st = null;
+                        try { st = fs.statSync(path.join(DRIVERS_DIR, f)); } catch (_) {}
+                        return { name: f, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 };
+                    })
+                    .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+                return sendJson(res, 200, { drivers: drivers, dir: DRIVERS_DIR });
+            } catch (e) { return sendJson(res, 500, { error: e.message }); }
+        }
+
+        if (action === 'driverInstall') {
+            let body = {};
+            try { body = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const nodes = Array.isArray(body.nodes) ? body.nodes.filter((n) => typeof n === 'string') : [];
+            const driver = String(body.driver || '');
+            if (!nodes.length) return sendJson(res, 400, { error: 'aucun poste sélectionné' });
+            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(driver)) return sendJson(res, 400, { error: 'driver invalide' });
+            if (!fs.existsSync(path.join(DRIVERS_DIR, driver))) return sendJson(res, 400, { error: 'driver introuvable: ' + driver });
+            if (!serverState.baseUrl) return sendJson(res, 500, { error: 'baseUrl pas encore captée — recharge la page admin' });
+
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const runId = crypto.randomBytes(8).toString('hex');
+            const run = {
+                id: runId, kind: 'driver', driver: driver,
+                timestamp: Date.now(),
+                user: (user && (user.name || user._id)) || 'unknown',
+                nodes: nodes.map((id) => ({ id: id })),
+                results: {},
+            };
+            runs[runId] = run;
+
+            const dispatched = [];
+            const offline = [];
+            nodes.forEach((nid) => {
+                const ws = wsagents[nid];
+                if (!ws || typeof ws.send !== 'function') {
+                    offline.push(nid);
+                    run.results[nid] = { status: 'offline', time: Date.now() };
+                    return;
+                }
+                const did = crypto.randomBytes(16).toString('hex');
+                pendingDispatches[did] = { kind: 'driverInstall', runId: runId, nodeId: nid, expires: Date.now() + RUN_TTL_MS };
+                const url = serverState.baseUrl + '/maintctl-download/driver/' + newDownloadToken('driver', { file: driver });
+                try {
+                    ws.send(JSON.stringify({
+                        action: 'plugin', plugin: 'maintctl', pluginaction: 'driverInstall',
+                        dispatchId: did, driver: driver, driverUrl: url
+                    }));
+                    run.results[nid] = { status: 'running', step: 'download', time: Date.now() };
+                    dispatched.push(nid);
+                } catch (e) {
+                    run.results[nid] = { status: 'error', error: String(e), time: Date.now() };
+                }
+            });
+            saveHistory(__dir);
+            return sendJson(res, 200, { runId: runId, dispatched: dispatched.length, offline: offline.length });
         }
 
         // ---- Gestionnaire de périphériques ----

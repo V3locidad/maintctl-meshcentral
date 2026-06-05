@@ -51,6 +51,9 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'devAction':
                 doDevAction(args);
                 return 'devAction started';
+            case 'driverInstall':
+                doDriverInstall(args);
+                return 'driverInstall started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -524,6 +527,95 @@ function doDevAction(data) {
             action: action,
             instanceId: instanceId,
             logTail: (log || '').slice(-1500)
+        });
+    });
+}
+
+// Installation d'un pack driver (.zip contenant un ou plusieurs .inf).
+// Flow : download zip → Expand-Archive → pnputil /add-driver *.inf /install /subdirs.
+// Le succès est jugé sur $LASTEXITCODE :
+//   0    = ERROR_SUCCESS
+//   3010 = ERROR_SUCCESS_REBOOT_REQUIRED (toujours OK, reboot requis)
+//   259  = ERROR_NO_MORE_ITEMS (rien à installer) → on remonte ok=false
+function buildPsDriverInstall(zipPath, extractDir) {
+    var zipE = zipPath.replace(/'/g, "''");
+    var dirE = extractDir.replace(/'/g, "''");
+    var dirQ = extractDir.replace(/"/g, '""');
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + 'try {'
+        + '  if (-not (Test-Path \'' + zipE + '\')) { throw "zip introuvable" }'
+        + '  if (Test-Path \'' + dirE + '\') { Remove-Item \'' + dirE + '\' -Recurse -Force -ErrorAction SilentlyContinue }'
+        + '  New-Item -ItemType Directory -Path \'' + dirE + '\' -Force | Out-Null;'
+        + '  Expand-Archive -LiteralPath \'' + zipE + '\' -DestinationPath \'' + dirE + '\' -Force;'
+        + '  $infs = Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue;'
+        + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
+        + '  if ($infs.Count -eq 0) { Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
+        + '  $out = & pnputil.exe /add-driver "' + dirQ + '\\*.inf" /install /subdirs 2>&1 | Out-String;'
+        + '  $code = $LASTEXITCODE;'
+        + '  Write-Host $out;'
+        // oemNN.inf publishing is identique en EN/FR
+        + '  $installed = ([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count;'
+        + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
+        + '  Write-Host ("MAINTCTL_EXIT:" + $code);'
+        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); Write-Host "MAINTCTL_EXIT:1"; exit 1 }';
+}
+
+function doDriverInstall(data) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var fs = require('fs');
+    var url = data.driverUrl || '';
+    if (!url) {
+        reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'driverUrl manquant' });
+        return;
+    }
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var ts = Date.now() + '_' + Math.floor(Math.random() * 1e9);
+    var zipPath = tmpRoot + '\\maintctl_drv_' + ts + '.zip';
+    var extractDir = tmpRoot + '\\maintctl_drv_' + ts;
+
+    reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'download' });
+    downloadFile(url, zipPath, function (err) {
+        if (err) {
+            reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'download: ' + err.message });
+            return;
+        }
+        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'install' });
+        runPowerShell(buildPsDriverInstall(zipPath, extractDir), 15 * 60 * 1000, function (ok, _bytes, log) {
+            // Cleanup : zip toujours, extractDir si succès uniquement (laisse pour debug en cas d'erreur)
+            try { fs.unlinkSync(zipPath); } catch (_) {}
+            var installed = 0, code = -1;
+            var m1 = (log || '').match(/MAINTCTL_INSTALLED:(\d+)/);
+            if (m1) installed = parseInt(m1[1], 10) || 0;
+            var m2 = (log || '').match(/MAINTCTL_EXIT:(-?\d+)/);
+            if (m2) code = parseInt(m2[1], 10);
+            var reboot = (code === 3010);
+            var success = ok && (code === 0 || code === 3010) && installed > 0;
+            var errMsg = '';
+            if (!ok) errMsg = 'PowerShell échoué';
+            else if (code === 259) errMsg = 'Aucun .inf détecté dans le zip';
+            else if (installed === 0) errMsg = 'pnputil n\'a publié aucun pilote (code ' + code + ')';
+            else if (code !== 0 && code !== 3010) errMsg = 'pnputil code ' + code;
+            if (success) {
+                try {
+                    require('child_process').execFile(
+                        (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\cmd.exe',
+                        ['/c', 'rmdir', '/S', '/Q', extractDir]
+                    );
+                } catch (_) {}
+            }
+            reply({
+                pluginaction: 'driverInstallComplete',
+                dispatchId: data.dispatchId,
+                ok: success,
+                installed: installed,
+                rebootRequired: reboot,
+                error: success ? undefined : errMsg,
+                logTail: (log || '').slice(-3000)
+            });
         });
     });
 }
