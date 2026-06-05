@@ -195,8 +195,10 @@
 <div id="panel-drivers" class="panel">
   <div class="bar">
     <button id="drvRefreshBtn">Rafraîchir</button>
-    <button id="drvUploadBtn">Déposer un .zip</button>
-    <input type="file" id="drvUploadInput" accept=".zip" style="display:none">
+    <button id="drvUploadFilesBtn" title="Sélectionne plusieurs fichiers (.inf, .sys, .cat, .dll…)">Déposer des fichiers</button>
+    <button id="drvUploadZipBtn" title=".zip pré-packagé">Déposer un .zip</button>
+    <input type="file" id="drvUploadFilesInput" multiple style="display:none">
+    <input type="file" id="drvUploadZipInput" accept=".zip" style="display:none">
     <span id="drvUploadStatus" style="font-size:11px; color:#666"></span>
     <span id="drvSelCount" class="pill">0 poste(s) sélectionné(s)</span>
     <span style="flex:1"></span>
@@ -942,11 +944,16 @@ function renderDrivers() {
   var html = '';
   availableDrivers.forEach(function (d) {
     var sel = (selectedDriver === d.name);
+    var icon = (d.type === 'folder') ? '📁' : '🗜️';
+    var typeBadge = (d.type === 'folder')
+      ? ('<span class="badge">' + d.fileCount + ' fichier' + (d.fileCount > 1 ? 's' : '') + (d.hasInf ? '' : ' ⚠ pas de .inf') + '</span>')
+      : '<span class="badge">.zip</span>';
     html += '<div class="row' + (sel ? ' selected' : '') + '" data-name="' + escapeHtml(d.name) + '">'
       + '<input type="radio" name="drvPick" ' + (sel ? 'checked' : '') + '>'
       + '<div class="main">'
-      + '<div class="title">' + escapeHtml(d.name) + '</div>'
-      + '<div class="sub"><span class="badge">' + fmtBytes(d.size) + '</span>'
+      + '<div class="title">' + icon + ' ' + escapeHtml(d.name) + '</div>'
+      + '<div class="sub">' + typeBadge
+      + '<span class="badge">' + fmtBytes(d.size) + '</span>'
       + '<span class="badge">' + escapeHtml(fmtMtime(d.mtime)) + '</span></div>'
       + '</div>'
       + '<button class="drvDelBtn" data-name="' + escapeHtml(d.name) + '" title="Supprimer du NAS">🗑</button>'
@@ -966,12 +973,85 @@ function renderDrivers() {
       e.stopPropagation();
       var name = b.getAttribute('data-name');
       if (!window.confirm('Supprimer ' + name + ' du NAS ?\n\nCela ne touche pas les postes où ce pilote est déjà installé.')) return;
-      getJson(BASE + '&action=deleteDriver&filename=' + encodeURIComponent(name)).then(function (r) {
+      getJson(BASE + '&action=deleteDriver&name=' + encodeURIComponent(name)).then(function (r) {
         if (r.error) { alert('Erreur: ' + r.error); return; }
         if (selectedDriver === name) { selectedDriver = ''; updateDrvUi(); }
         refreshDrivers();
       });
     });
+  });
+}
+
+// Upload de N fichiers d'un pilote dans un sous-dossier sur le NAS.
+// Demande à l'utilisateur le nom du pack, puis upload séquentiel.
+function uploadDriverFiles(fileList) {
+  var status = document.getElementById('drvUploadStatus');
+  var files = Array.prototype.slice.call(fileList || []);
+  if (!files.length) return;
+  // Vérifie qu'il y a au moins un .inf
+  var hasInf = files.some(function (f) { return /\.inf$/i.test(f.name); });
+  if (!hasInf) {
+    if (!window.confirm('Aucun .inf dans la sélection. Continuer quand même ? (l\'installation pnputil échouera sans .inf)')) return;
+  }
+  // Suggère un nom de pack à partir du premier .inf ou du dossier
+  var defaultName = '';
+  var infFile = files.find(function (f) { return /\.inf$/i.test(f.name); });
+  if (infFile) defaultName = infFile.name.replace(/\.inf$/i, '');
+  defaultName = defaultName.replace(/[^a-zA-Z0-9._-]+/g, '_');
+  var pack = window.prompt(
+    'Nom du pack de pilotes ?\n\n' + files.length + ' fichier(s) seront déposés dans driversDir/<nom>/ sur le NAS.\n'
+    + 'Autorisé : lettres, chiffres, . _ - (pas d\'espace ni d\'accent).',
+    defaultName
+  );
+  if (!pack) return;
+  pack = pack.trim();
+  if (!/^[a-zA-Z0-9._-]+$/.test(pack)) {
+    status.textContent = '⚠ nom de pack invalide';
+    return;
+  }
+  // Vérifie les noms de fichiers
+  var invalid = files.filter(function (f) { return !/^[a-zA-Z0-9._-]+\.[a-zA-Z0-9]+$/.test(f.name); });
+  if (invalid.length) {
+    status.textContent = '⚠ noms invalides : ' + invalid.map(function (f) { return f.name; }).join(', ');
+    return;
+  }
+  var overwrite = 0;
+  if (availableDrivers.some(function (d) { return d.name === pack; })) {
+    if (!window.confirm('Pack "' + pack + '" existe déjà sur le NAS. Ajouter/remplacer les fichiers dedans ?')) return;
+    overwrite = 1;
+  }
+  var done = 0;
+  var total = files.length;
+  function uploadOne(f) {
+    status.textContent = 'Upload ' + (done + 1) + '/' + total + ' : ' + f.name + ' (' + fmtBytes(f.size) + ')…';
+    return getJson(BASE + '&action=requestDriverUploadToken&pack=' + encodeURIComponent(pack)
+        + '&filename=' + encodeURIComponent(f.name) + '&overwrite=' + overwrite)
+      .then(function (r) {
+        if (r.error) throw new Error(r.error);
+        return fetch(r.url, {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: f
+        }).then(function (resp) { return resp.json(); });
+      })
+      .then(function (r2) {
+        if (r2.error) throw new Error(r2.error);
+        done++;
+      });
+  }
+  // Série pour pas saturer le NAS
+  var chain = Promise.resolve();
+  files.forEach(function (f) {
+    chain = chain.then(function () { return uploadOne(f); });
+  });
+  chain.then(function () {
+    status.textContent = '✓ ' + total + ' fichier(s) déposés dans pack "' + pack + '"';
+    refreshDrivers();
+    setTimeout(function () { status.textContent = ''; }, 6000);
+  }).catch(function (e) {
+    status.textContent = '⚠ ' + e.message + ' (après ' + done + '/' + total + ')';
+    refreshDrivers();
   });
 }
 
@@ -1069,13 +1149,20 @@ function renderDrvResults(run) {
 }
 
 document.getElementById('drvRefreshBtn').addEventListener('click', function () { refreshAgents().then(refreshDrivers); });
-document.getElementById('drvUploadBtn').addEventListener('click', function () {
-  document.getElementById('drvUploadInput').click();
+document.getElementById('drvUploadZipBtn').addEventListener('click', function () {
+  document.getElementById('drvUploadZipInput').click();
 });
-document.getElementById('drvUploadInput').addEventListener('change', function (e) {
+document.getElementById('drvUploadZipInput').addEventListener('change', function (e) {
   var f = e.target.files && e.target.files[0];
   if (f) uploadDriver(f);
-  e.target.value = ''; // reset pour permettre de re-uploader le même fichier
+  e.target.value = '';
+});
+document.getElementById('drvUploadFilesBtn').addEventListener('click', function () {
+  document.getElementById('drvUploadFilesInput').click();
+});
+document.getElementById('drvUploadFilesInput').addEventListener('change', function (e) {
+  if (e.target.files && e.target.files.length) uploadDriverFiles(e.target.files);
+  e.target.value = '';
 });
 document.getElementById('drvInstallBtn').addEventListener('click', runDriverInstall);
 document.getElementById('drvSelectAllBtn').addEventListener('click', function () {

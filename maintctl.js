@@ -309,8 +309,23 @@ module.exports.maintctl = function (parent) {
                 if (!entry || entry.kind !== 'driver') {
                     return res.status(403).set('Content-Type', 'text/plain').send('forbidden');
                 }
-                const file = (entry.payload && entry.payload.file) || '';
-                // Sécurité : nom de fichier strict, .zip uniquement, pas de path traversal.
+                const payload = entry.payload || {};
+                // Deux modes :
+                //   { file: 'xxx.zip' }                         → fichier .zip à la racine de driversDir
+                //   { pack: 'foo', file: 'foo.inf' }            → fichier dans le sous-dossier pack/
+                if (payload.pack) {
+                    if (!/^[a-zA-Z0-9._-]+$/.test(payload.pack) || !/^[a-zA-Z0-9._-]+\.[a-zA-Z0-9]+$/.test(payload.file)) {
+                        return res.status(400).set('Content-Type', 'text/plain').send('invalid path');
+                    }
+                    const full = path.join(loadDriversDir(), payload.pack, payload.file);
+                    if (!fs.existsSync(full)) return res.status(404).set('Content-Type', 'text/plain').send('not found');
+                    const stat = fs.statSync(full);
+                    res.set('Content-Type', 'application/octet-stream');
+                    res.set('Content-Length', stat.size);
+                    res.set('Content-Disposition', 'attachment; filename="' + payload.file + '"');
+                    return fs.createReadStream(full).pipe(res);
+                }
+                const file = payload.file || '';
                 if (!/^[a-zA-Z0-9._-]+\.zip$/.test(file)) {
                     return res.status(400).set('Content-Type', 'text/plain').send('invalid file');
                 }
@@ -334,12 +349,13 @@ module.exports.maintctl = function (parent) {
                 }
                 delete uploadTokens[token]; // single-use
                 const dir = loadDriversDir();
+                const targetDir = entry.pack ? path.join(dir, entry.pack) : dir;
                 try {
-                    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
                 } catch (e) {
                     return res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'mkdir échoué (NFS read-only ?): ' + e.message }));
                 }
-                const full = path.join(dir, entry.filename);
+                const full = path.join(targetDir, entry.filename);
                 const tmp = full + '.uploading';
                 const ws2 = fs.createWriteStream(tmp);
                 req.pipe(ws2);
@@ -348,7 +364,7 @@ module.exports.maintctl = function (parent) {
                         if (fs.existsSync(full)) fs.unlinkSync(full);
                         fs.renameSync(tmp, full);
                         const stat = fs.statSync(full);
-                        res.set('Content-Type', 'application/json').send(JSON.stringify({ ok: true, filename: entry.filename, size: stat.size }));
+                        res.set('Content-Type', 'application/json').send(JSON.stringify({ ok: true, filename: entry.filename, pack: entry.pack || null, size: stat.size }));
                     } catch (e) {
                         try { fs.unlinkSync(tmp); } catch (_) {}
                         res.status(500).set('Content-Type', 'application/json').send(JSON.stringify({ error: 'rename: ' + e.message }));
@@ -457,28 +473,59 @@ module.exports.maintctl = function (parent) {
                 if (!fs.existsSync(dir)) {
                     return sendJson(res, 200, { drivers: [], dir: dir, error: 'dossier introuvable : ' + dir + ' — vérifie maintctl-config.json et le montage NFS' });
                 }
-                const drivers = fs.readdirSync(dir)
-                    .filter((f) => /^[a-zA-Z0-9._-]+\.zip$/.test(f))
-                    .map((f) => {
-                        let st = null;
-                        try { st = fs.statSync(path.join(dir, f)); } catch (_) {}
-                        return { name: f, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 };
-                    })
-                    .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+                const drivers = [];
+                fs.readdirSync(dir).forEach((entry) => {
+                    if (!/^[a-zA-Z0-9._-]+$/.test(entry)) return;
+                    const full = path.join(dir, entry);
+                    let st = null;
+                    try { st = fs.statSync(full); } catch (_) { return; }
+                    if (st.isFile() && /\.zip$/i.test(entry)) {
+                        drivers.push({ name: entry, type: 'zip', size: st.size, mtime: st.mtimeMs, fileCount: 1 });
+                    } else if (st.isDirectory()) {
+                        // Scanne le dossier : taille totale + count + détecte présence .inf
+                        let total = 0, count = 0, hasInf = false;
+                        try {
+                            fs.readdirSync(full).forEach((f) => {
+                                try {
+                                    const s2 = fs.statSync(path.join(full, f));
+                                    if (s2.isFile()) {
+                                        total += s2.size; count++;
+                                        if (/\.inf$/i.test(f)) hasInf = true;
+                                    }
+                                } catch (_) {}
+                            });
+                        } catch (_) {}
+                        if (count > 0) drivers.push({ name: entry, type: 'folder', size: total, mtime: st.mtimeMs, fileCount: count, hasInf: hasInf });
+                    }
+                });
+                drivers.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
                 return sendJson(res, 200, { drivers: drivers, dir: dir });
             } catch (e) { return sendJson(res, 500, { error: e.message + ' (dir: ' + dir + ')' }); }
         }
 
         if (action === 'requestDriverUploadToken') {
             const filename = String((req.query && req.query.filename) || '').replace(/[\\/]/g, '_').trim();
-            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(filename)) {
-                return sendJson(res, 400, { error: 'filename invalide (autorisé : [a-zA-Z0-9._-]+.zip)' });
-            }
+            const pack = String((req.query && req.query.pack) || '').trim();
             const dir = loadDriversDir();
-            // On vérifie le dossier mais on ne crée pas ici (le PUT s'en charge si besoin).
             const overwrite = String((req.query && req.query.overwrite) || '') === '1';
+
+            if (pack) {
+                // Mode pack : dossier + n'importe quel fichier de pilote (.inf/.sys/.cat/.dll/.cab/.pnf/...)
+                if (!/^[a-zA-Z0-9._-]+$/.test(pack)) return sendJson(res, 400, { error: 'pack invalide ([a-zA-Z0-9._-])' });
+                if (!/^[a-zA-Z0-9._-]+\.[a-zA-Z0-9]+$/.test(filename)) return sendJson(res, 400, { error: 'filename invalide' });
+                if (!overwrite && fs.existsSync(path.join(dir, pack, filename))) {
+                    return sendJson(res, 409, { error: 'fichier existe déjà — overwrite=1 pour remplacer' });
+                }
+                const token = crypto.randomBytes(24).toString('hex');
+                uploadTokens[token] = { kind: 'driver', pack: pack, filename: filename, expires: Date.now() + DOWNLOAD_TTL_MS };
+                return sendJson(res, 200, { token: token, url: '/maintctl-upload/driver/' + token, pack: pack, filename: filename });
+            }
+            // Mode legacy : .zip à la racine
+            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(filename)) {
+                return sendJson(res, 400, { error: 'filename invalide (autorisé : [a-zA-Z0-9._-]+.zip — ou utilise le mode pack pour des fichiers libres)' });
+            }
             if (!overwrite && fs.existsSync(path.join(dir, filename))) {
-                return sendJson(res, 409, { error: 'fichier existe déjà — relance avec overwrite=1 pour remplacer' });
+                return sendJson(res, 409, { error: 'fichier existe déjà — overwrite=1 pour remplacer' });
             }
             const token = crypto.randomBytes(24).toString('hex');
             uploadTokens[token] = { kind: 'driver', filename: filename, expires: Date.now() + DOWNLOAD_TTL_MS };
@@ -486,11 +533,19 @@ module.exports.maintctl = function (parent) {
         }
 
         if (action === 'deleteDriver') {
-            const filename = String((req.query && req.query.filename) || '');
-            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(filename)) return sendJson(res, 400, { error: 'filename invalide' });
-            const full = path.join(loadDriversDir(), filename);
+            const name = String((req.query && req.query.name) || (req.query && req.query.filename) || '');
+            if (!/^[a-zA-Z0-9._-]+$/.test(name)) return sendJson(res, 400, { error: 'nom invalide' });
+            const full = path.join(loadDriversDir(), name);
             if (!fs.existsSync(full)) return sendJson(res, 404, { error: 'introuvable' });
-            try { fs.unlinkSync(full); return sendJson(res, 200, { ok: true }); }
+            try {
+                const st = fs.statSync(full);
+                if (st.isDirectory()) {
+                    fs.rmSync(full, { recursive: true, force: true });
+                } else {
+                    fs.unlinkSync(full);
+                }
+                return sendJson(res, 200, { ok: true });
+            }
             catch (e) { return sendJson(res, 500, { error: e.message }); }
         }
 
@@ -501,9 +556,30 @@ module.exports.maintctl = function (parent) {
             const nodes = Array.isArray(body.nodes) ? body.nodes.filter((n) => typeof n === 'string') : [];
             const driver = String(body.driver || '');
             if (!nodes.length) return sendJson(res, 400, { error: 'aucun poste sélectionné' });
-            if (!/^[a-zA-Z0-9._-]+\.zip$/.test(driver)) return sendJson(res, 400, { error: 'driver invalide' });
-            if (!fs.existsSync(path.join(loadDriversDir(), driver))) return sendJson(res, 400, { error: 'driver introuvable: ' + driver });
+            if (!/^[a-zA-Z0-9._-]+$/.test(driver)) return sendJson(res, 400, { error: 'driver invalide' });
+            const driversDir = loadDriversDir();
+            const driverPath = path.join(driversDir, driver);
+            if (!fs.existsSync(driverPath)) return sendJson(res, 400, { error: 'driver introuvable: ' + driver });
             if (!serverState.baseUrl) return sendJson(res, 500, { error: 'baseUrl pas encore captée — recharge la page admin' });
+
+            // Détecte le type
+            const st = fs.statSync(driverPath);
+            const isZip = st.isFile() && /\.zip$/i.test(driver);
+            const isFolder = st.isDirectory();
+            if (!isZip && !isFolder) return sendJson(res, 400, { error: 'driver doit être un .zip ou un dossier' });
+
+            // Pour un folder : énumère les fichiers (uniquement à la racine du pack)
+            let packFiles = [];
+            if (isFolder) {
+                try {
+                    packFiles = fs.readdirSync(driverPath).filter((f) => {
+                        try { return fs.statSync(path.join(driverPath, f)).isFile(); }
+                        catch (_) { return false; }
+                    });
+                } catch (e) { return sendJson(res, 500, { error: 'lecture dossier: ' + e.message }); }
+                if (!packFiles.length) return sendJson(res, 400, { error: 'dossier vide' });
+                if (!packFiles.some((f) => /\.inf$/i.test(f))) return sendJson(res, 400, { error: 'aucun .inf dans le dossier ' + driver });
+            }
 
             const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
             const runId = crypto.randomBytes(8).toString('hex');
@@ -527,12 +603,20 @@ module.exports.maintctl = function (parent) {
                 }
                 const did = crypto.randomBytes(16).toString('hex');
                 pendingDispatches[did] = { kind: 'driverInstall', runId: runId, nodeId: nid, expires: Date.now() + RUN_TTL_MS };
-                const url = serverState.baseUrl + '/maintctl-download/driver/' + newDownloadToken('driver', { file: driver });
-                try {
-                    ws.send(JSON.stringify({
-                        action: 'plugin', plugin: 'maintctl', pluginaction: 'driverInstall',
-                        dispatchId: did, driver: driver, driverUrl: url
+                const msg = {
+                    action: 'plugin', plugin: 'maintctl', pluginaction: 'driverInstall',
+                    dispatchId: did, driver: driver
+                };
+                if (isZip) {
+                    msg.driverUrl = serverState.baseUrl + '/maintctl-download/driver/' + newDownloadToken('driver', { file: driver });
+                } else {
+                    msg.driverFiles = packFiles.map((f) => ({
+                        name: f,
+                        url: serverState.baseUrl + '/maintctl-download/driver/' + newDownloadToken('driver', { pack: driver, file: f })
                     }));
+                }
+                try {
+                    ws.send(JSON.stringify(msg));
                     run.results[nid] = { status: 'running', step: 'download', time: Date.now() };
                     dispatched.push(nid);
                 } catch (e) {

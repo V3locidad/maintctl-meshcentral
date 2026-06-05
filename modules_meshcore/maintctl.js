@@ -561,6 +561,45 @@ function buildPsDriverInstall(zipPath, extractDir) {
         + '} catch { Write-Host ("ERR: " + $_.Exception.Message); Write-Host "MAINTCTL_EXIT:1"; exit 1 }';
 }
 
+// pnputil sur un dossier déjà extrait (pas de Expand-Archive).
+function buildPsDriverInstallDir(extractDir) {
+    var dirE = extractDir.replace(/'/g, "''");
+    var dirQ = extractDir.replace(/"/g, '""');
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + 'try {'
+        + '  $infs = Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue;'
+        + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
+        + '  if ($infs.Count -eq 0) { Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
+        + '  $out = & pnputil.exe /add-driver "' + dirQ + '\\*.inf" /install /subdirs 2>&1 | Out-String;'
+        + '  $code = $LASTEXITCODE;'
+        + '  Write-Host $out;'
+        + '  $installed = ([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count;'
+        + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
+        + '  Write-Host ("MAINTCTL_EXIT:" + $code);'
+        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); Write-Host "MAINTCTL_EXIT:1"; exit 1 }';
+}
+
+// Télécharge tous les fichiers du pack en série dans extractDir.
+function downloadPackFiles(files, extractDir, onProgress, onDone) {
+    var fs = require('fs');
+    try { if (!fs.existsSync(extractDir)) fs.mkdirSync(extractDir); }
+    catch (e) { return onDone(new Error('mkdir extract: ' + e.message)); }
+    var i = 0;
+    function next() {
+        if (i >= files.length) return onDone(null);
+        var f = files[i++];
+        if (!f || !f.name || !f.url) return onDone(new Error('fichier invalide dans la liste'));
+        if (!/^[a-zA-Z0-9._-]+\.[a-zA-Z0-9]+$/.test(f.name)) return onDone(new Error('nom fichier suspect: ' + f.name));
+        onProgress && onProgress(i, files.length, f.name);
+        downloadFile(f.url, extractDir + '\\' + f.name, function (err) {
+            if (err) return onDone(new Error('download ' + f.name + ': ' + err.message));
+            next();
+        });
+    }
+    next();
+}
+
 function doDriverInstall(data) {
     if (process.platform !== 'win32') {
         reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'Windows only' });
@@ -568,25 +607,18 @@ function doDriverInstall(data) {
     }
     var fs = require('fs');
     var url = data.driverUrl || '';
-    if (!url) {
-        reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'driverUrl manquant' });
+    var files = data.driverFiles || null;
+    if (!url && !(files && files.length)) {
+        reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'driverUrl ou driverFiles requis' });
         return;
     }
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
     var ts = Date.now() + '_' + Math.floor(Math.random() * 1e9);
-    var zipPath = tmpRoot + '\\maintctl_drv_' + ts + '.zip';
     var extractDir = tmpRoot + '\\maintctl_drv_' + ts;
 
-    reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'download' });
-    downloadFile(url, zipPath, function (err) {
-        if (err) {
-            reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'download: ' + err.message });
-            return;
-        }
-        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'install' });
-        runPowerShell(buildPsDriverInstall(zipPath, extractDir), 15 * 60 * 1000, function (ok, _bytes, log) {
-            // Cleanup : zip toujours, extractDir si succès uniquement (laisse pour debug en cas d'erreur)
-            try { fs.unlinkSync(zipPath); } catch (_) {}
+    function runInstall(script, cleanupExtras) {
+        runPowerShell(script, 15 * 60 * 1000, function (ok, _bytes, log) {
+            (cleanupExtras || []).forEach(function (p) { try { fs.unlinkSync(p); } catch (_) {} });
             var installed = 0, code = -1;
             var m1 = (log || '').match(/MAINTCTL_INSTALLED:(\d+)/);
             if (m1) installed = parseInt(m1[1], 10) || 0;
@@ -596,7 +628,7 @@ function doDriverInstall(data) {
             var success = ok && (code === 0 || code === 3010) && installed > 0;
             var errMsg = '';
             if (!ok) errMsg = 'PowerShell échoué';
-            else if (code === 259) errMsg = 'Aucun .inf détecté dans le zip';
+            else if (code === 259) errMsg = 'Aucun .inf détecté';
             else if (installed === 0) errMsg = 'pnputil n\'a publié aucun pilote (code ' + code + ')';
             else if (code !== 0 && code !== 3010) errMsg = 'pnputil code ' + code;
             if (success) {
@@ -617,6 +649,34 @@ function doDriverInstall(data) {
                 logTail: (log || '').slice(-3000)
             });
         });
+    }
+
+    if (files && files.length) {
+        // Mode pack : N fichiers à télécharger directement dans extractDir
+        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'download 0/' + files.length });
+        downloadPackFiles(files, extractDir, function (i, n, name) {
+            reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'download ' + i + '/' + n + ' (' + name + ')' });
+        }, function (err) {
+            if (err) {
+                reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: err.message });
+                return;
+            }
+            reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'install' });
+            runInstall(buildPsDriverInstallDir(extractDir), []);
+        });
+        return;
+    }
+
+    // Mode legacy : un .zip
+    var zipPath = tmpRoot + '\\maintctl_drv_' + ts + '.zip';
+    reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'download' });
+    downloadFile(url, zipPath, function (err) {
+        if (err) {
+            reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'download: ' + err.message });
+            return;
+        }
+        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'install' });
+        runInstall(buildPsDriverInstall(zipPath, extractDir), [zipPath]);
     });
 }
 
