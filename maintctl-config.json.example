@@ -1,0 +1,4 @@
+{
+  "_comment": "Renomme en maintctl-config.json. driversDir est un dossier (NFS/SMB monté localement sur le serveur MC, ou local) qui contient des packs pilotes au format .zip — chaque .zip est un pack autonome (un ou plusieurs .inf + fichiers associés). Le plugin scanne ce dossier et propose chaque .zip dans l'onglet Drivers.",
+  "driversDir": "/mnt/software/DRIVERS"
+}

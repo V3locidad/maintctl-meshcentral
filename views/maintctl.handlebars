@@ -916,7 +916,9 @@ function refreshDrivers() {
   document.getElementById('drvList').innerHTML = '<div class="empty">Chargement…</div>';
   return getJson(BASE + '&action=driverList').then(function (r) {
     availableDrivers = r.drivers || [];
-    document.getElementById('drvDirInfo').textContent = 'Dépose tes .zip dans : ' + (r.dir || '');
+    var info = 'Source : ' + (r.dir || '?');
+    if (r.error) info += ' — ⚠ ' + r.error;
+    document.getElementById('drvDirInfo').textContent = info;
     document.getElementById('drvCount').textContent = availableDrivers.length;
     renderDrivers();
   }).catch(function (e) {
@@ -927,8 +929,9 @@ function refreshDrivers() {
 function renderDrivers() {
   var body = document.getElementById('drvList');
   if (!availableDrivers.length) {
-    body.innerHTML = '<div class="empty">Aucun .zip dans le dossier drivers du plugin. '
-      + 'Zippe un dossier de pilote (.inf + fichiers associés) et dépose le .zip sur le serveur.</div>';
+    body.innerHTML = '<div class="empty">Aucun .zip dans le dossier configuré. '
+      + 'Zippe un dossier de pilote (.inf + fichiers associés) et dépose le .zip sur le NAS '
+      + '(voir maintctl-config.json côté serveur).</div>';
     return;
   }
   var html = '';

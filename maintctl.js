@@ -18,7 +18,17 @@ const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
 const downloadTokens = {};         // token -> { kind, payload, expires }
-const DRIVERS_DIR = path.join(__dirname, 'drivers');
+
+// driversDir vient de maintctl-config.json (mêmes principes que softctl :
+// NFS/SMB monté côté serveur MC, on scanne pour les .zip). Fallback : dossier
+// drivers/ embarqué dans le plugin si pas de config.
+function loadDriversDir() {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'maintctl-config.json'), 'utf8'));
+        if (cfg && cfg.driversDir) return cfg.driversDir;
+    } catch (e) {}
+    return path.join(__dirname, 'drivers');
+}
 const serverState = { baseUrl: '' };
 const runs = {};                   // runId -> run cleanup
 const devCache = {};               // nodeId -> { devices, lastCheck }
@@ -303,7 +313,7 @@ module.exports.maintctl = function (parent) {
                 if (!/^[a-zA-Z0-9._-]+\.zip$/.test(file)) {
                     return res.status(400).set('Content-Type', 'text/plain').send('invalid file');
                 }
-                const full = path.join(DRIVERS_DIR, file);
+                const full = path.join(loadDriversDir(), file);
                 if (!fs.existsSync(full)) {
                     return res.status(404).set('Content-Type', 'text/plain').send('driver not found');
                 }
@@ -315,7 +325,7 @@ module.exports.maintctl = function (parent) {
             } catch (e) { res.status(500).send(e.message); }
         });
         console.log('maintctl: endpoint /maintctl-download/delprof2/:token enregistré');
-        console.log('maintctl: endpoint /maintctl-download/driver/:token enregistré (dir: ' + DRIVERS_DIR + ')');
+        console.log('maintctl: endpoint /maintctl-download/driver/:token enregistré (dir: ' + loadDriversDir() + ')');
     };
 
     obj.handleAdminReq = function (req, res, user) {
@@ -403,20 +413,21 @@ module.exports.maintctl = function (parent) {
         // ---- Bibliothèque de drivers ----
 
         if (action === 'driverList') {
+            const dir = loadDriversDir();
             try {
-                if (!fs.existsSync(DRIVERS_DIR)) {
-                    try { fs.mkdirSync(DRIVERS_DIR, { recursive: true }); } catch (_) {}
+                if (!fs.existsSync(dir)) {
+                    return sendJson(res, 200, { drivers: [], dir: dir, error: 'dossier introuvable : ' + dir + ' — vérifie maintctl-config.json et le montage NFS' });
                 }
-                const drivers = fs.readdirSync(DRIVERS_DIR)
+                const drivers = fs.readdirSync(dir)
                     .filter((f) => /^[a-zA-Z0-9._-]+\.zip$/.test(f))
                     .map((f) => {
                         let st = null;
-                        try { st = fs.statSync(path.join(DRIVERS_DIR, f)); } catch (_) {}
+                        try { st = fs.statSync(path.join(dir, f)); } catch (_) {}
                         return { name: f, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 };
                     })
                     .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-                return sendJson(res, 200, { drivers: drivers, dir: DRIVERS_DIR });
-            } catch (e) { return sendJson(res, 500, { error: e.message }); }
+                return sendJson(res, 200, { drivers: drivers, dir: dir });
+            } catch (e) { return sendJson(res, 500, { error: e.message + ' (dir: ' + dir + ')' }); }
         }
 
         if (action === 'driverInstall') {
@@ -427,7 +438,7 @@ module.exports.maintctl = function (parent) {
             const driver = String(body.driver || '');
             if (!nodes.length) return sendJson(res, 400, { error: 'aucun poste sélectionné' });
             if (!/^[a-zA-Z0-9._-]+\.zip$/.test(driver)) return sendJson(res, 400, { error: 'driver invalide' });
-            if (!fs.existsSync(path.join(DRIVERS_DIR, driver))) return sendJson(res, 400, { error: 'driver introuvable: ' + driver });
+            if (!fs.existsSync(path.join(loadDriversDir(), driver))) return sendJson(res, 400, { error: 'driver introuvable: ' + driver });
             if (!serverState.baseUrl) return sendJson(res, 500, { error: 'baseUrl pas encore captée — recharge la page admin' });
 
             const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
