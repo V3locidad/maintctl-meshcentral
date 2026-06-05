@@ -1,7 +1,7 @@
 {
   "name": "maintctl",
   "shortName": "maintctl",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "author": "V3locidad",
   "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage (%TEMP%, caches navigateurs, DISM, profils via DelProf2) et gestionnaire de périphériques (devices en erreur, drivers).",
   "hasAdminPanel": true,

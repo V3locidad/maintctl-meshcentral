@@ -51,8 +51,13 @@
   .resCell.ko { background: #f8d7da; color: #721c24; }
   .resCell.run { background: #fff3cd; color: #856404; }
   .resCell.off { background: #e2e3e5; color: #383d41; }
-  /* Devices — tree view */
+  /* Devices — tree view (style Gestionnaire Windows) */
   .devTree { flex: 1 1 auto; overflow: auto; border: 1px solid #ddd; border-radius: 4px; background: #fff; padding: 4px 0; font-size: 13px; }
+  .devRoot { padding: 4px 6px 4px 8px; display: flex; align-items: center; gap: 6px; user-select: none; }
+  .devRoot .caret { width: 10px; color: #888; font-family: monospace; }
+  .devRoot .icon { width: 16px; text-align: center; }
+  .devRoot .name { font-weight: 600; }
+  .devRootChildren { padding-left: 22px; }
   .devClass { user-select: none; }
   .devClassHdr { padding: 4px 6px 4px 8px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-radius: 3px; }
   .devClassHdr:hover { background: #f0f4ff; }
@@ -154,6 +159,7 @@
     <input id="devFilter" type="text" placeholder="Filtrer (nom, classe, statut...)" style="min-width:200px">
     <label><input type="checkbox" id="devErrorsOnly"> En erreur uniquement</label>
     <label title="CM_PROB 45 = matériel déjà vu mais pas connecté actuellement (vieilles clés USB, etc.). Masqué par défaut."><input type="checkbox" id="devShowGhosts"> Inclure absents</label>
+    <label title="Affiche les classes masquées par Windows par défaut (Volumes, etc.)"><input type="checkbox" id="devShowHidden"> Afficher périphériques cachés</label>
   </div>
 
   <div id="devSummary" class="summary" style="display:none"></div>
@@ -172,20 +178,20 @@ var pollTimer = null;
 var allDevices = [];
 var devCollapsed = {};  // class -> bool (true = collapsed)
 
-// Mapping classes → libellé FR + icône (emoji-ish, suffit pour repérage visuel)
+// Mapping classes → libellé FR exact comme Windows 10/11 (Gestionnaire de périphériques).
 var CLASS_LABELS = {
   AudioEndpoint: 'Entrées et sorties audio',
   Camera: 'Caméras',
-  CDROM: 'Lecteurs de CD-ROM/DVD',
+  CDROM: 'Lecteurs de DVD/CD-ROM',
   Computer: 'Ordinateur',
   DiskDrive: 'Lecteurs de disque',
   Display: 'Cartes graphiques',
   FDC: 'Contrôleurs de disquettes',
   FloppyDisk: 'Lecteurs de disquettes',
-  Firmware: 'Firmware',
+  Firmware: 'Microprogramme',
   HDC: 'Contrôleurs IDE ATA/ATAPI',
-  HIDClass: 'Périphériques d\'interface utilisateur',
-  Image: 'Périphériques d\'acquisition d\'image',
+  HIDClass: 'Interfaces Homme-machine',
+  Image: 'Périphériques d\'images',
   Keyboard: 'Claviers',
   MEDIA: 'Contrôleurs audio, vidéo et jeu',
   Monitor: 'Moniteurs',
@@ -193,7 +199,7 @@ var CLASS_LABELS = {
   Net: 'Cartes réseau',
   Ports: 'Ports (COM et LPT)',
   Printer: 'Imprimantes',
-  PrintQueue: 'Files d\'impression',
+  PrintQueue: 'Files d\'attente à l\'impression',
   Processor: 'Processeurs',
   SCSIAdapter: 'Contrôleurs de stockage',
   SecurityDevices: 'Périphériques de sécurité',
@@ -204,6 +210,13 @@ var CLASS_LABELS = {
   USBDevice: 'Périphériques USB',
   Volume: 'Volumes de stockage',
   WPD: 'Périphériques portables'
+};
+
+// Classes masquées par défaut dans Windows Device Manager (visibles via
+// Affichage → Périphériques cachés). On reproduit ce comportement.
+var HIDDEN_BY_DEFAULT_CLASSES = {
+  Volume: true,
+  LegacyDriver: true
 };
 function classLabel(c) { return CLASS_LABELS[c] || c || '(sans classe)'; }
 function classIcon(c) {
@@ -455,9 +468,11 @@ function renderDevices() {
   var q = (document.getElementById('devFilter').value || '').toLowerCase();
   var errorsOnly = document.getElementById('devErrorsOnly').checked;
   var showGhosts = document.getElementById('devShowGhosts').checked;
+  var showHidden = document.getElementById('devShowHidden').checked;
 
   var list = allDevices.slice();
   if (!showGhosts) list = list.filter(function (d) { return !isGhost(d); });
+  if (!showHidden) list = list.filter(function (d) { return !HIDDEN_BY_DEFAULT_CLASSES[d.Class]; });
   if (errorsOnly) list = list.filter(isRealError);
   if (q) {
     list = list.filter(function (d) {
@@ -481,6 +496,12 @@ function renderDevices() {
     document.getElementById('devListBody').innerHTML = '<div class="empty">aucun</div>';
     return;
   }
+
+  // Nœud racine = nom du poste (label de l'option select).
+  var sel = document.getElementById('devNodeSel');
+  var rootName = (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].text) || 'Ordinateur';
+  // Retire le suffixe " (salle)" si présent pour ne garder que le nom du poste.
+  rootName = rootName.replace(/\s*\(.*\)\s*$/, '');
 
   // Auto-expand : classes avec erreur ouvertes par défaut. Si l'utilisateur a
   // manuellement plié/déplié, on respecte son choix (devCollapsed).
@@ -521,7 +542,15 @@ function renderDevices() {
       + '</div>';
   }).join('');
 
-  document.getElementById('devListBody').innerHTML = html;
+  // Wrap dans une racine "nom du poste" comme Windows DM.
+  var rootHtml = '<div class="devRoot">'
+    + '<span class="caret">▼</span>'
+    + '<span class="icon">🖥️</span>'
+    + '<span class="name">' + escapeHtml(rootName) + '</span>'
+    + '</div>'
+    + '<div class="devRootChildren">' + html + '</div>';
+
+  document.getElementById('devListBody').innerHTML = rootHtml;
 
   // Toggle plier/déplier
   Array.prototype.forEach.call(document.querySelectorAll('.devClassHdr'), function (h) {
@@ -562,6 +591,7 @@ document.getElementById('devRefreshBtn').addEventListener('click', function () {
 document.getElementById('devFilter').addEventListener('input', renderDevices);
 document.getElementById('devErrorsOnly').addEventListener('change', renderDevices);
 document.getElementById('devShowGhosts').addEventListener('change', renderDevices);
+document.getElementById('devShowHidden').addEventListener('change', renderDevices);
 
 refreshAgents();
 </script>
