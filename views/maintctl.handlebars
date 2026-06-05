@@ -141,6 +141,7 @@
     <span style="flex:1"></span>
     <input id="devFilter" type="text" placeholder="Filtrer (nom, classe, statut...)" style="min-width:200px">
     <label><input type="checkbox" id="devErrorsOnly"> En erreur uniquement</label>
+    <label title="CM_PROB 45 = matériel déjà vu mais pas connecté actuellement (vieilles clés USB, etc.). Masqué par défaut."><input type="checkbox" id="devShowGhosts"> Inclure absents</label>
   </div>
 
   <div id="devSummary" class="summary" style="display:none"></div>
@@ -359,19 +360,25 @@ function loadDevices(force) {
     });
 }
 
+// CM_PROB 45 = "currently not connected" → fantômes (USB jamais débranchées de façon
+// propre). On les distingue dans le résumé pour ne pas crier au feu.
+function isGhost(d) { return d && d.Problem === 45; }
+function isRealError(d) {
+  var s = (d.Status || '').toString().toLowerCase();
+  if (isGhost(d)) return false;
+  return s === 'error' || s === 'degraded' || (d.Problem && d.Problem !== 0);
+}
 function renderDevSummary(cached, lastCheck) {
   var total = allDevices.length;
-  var errors = allDevices.filter(function (d) { return (d.Status || '').toString().toLowerCase() === 'error'; }).length;
+  var present = allDevices.filter(function (d) { return !isGhost(d); }).length;
+  var ghosts = total - present;
+  var errors = allDevices.filter(isRealError).length;
   var disabled = allDevices.filter(function (d) { return (d.Status || '').toString().toLowerCase() === 'disabled'; }).length;
-  var unknown = allDevices.filter(function (d) {
-    var s = (d.Status || '').toString().toLowerCase();
-    return s === 'unknown' || s === '';
-  }).length;
   var info = cached ? ('cache, ' + new Date(lastCheck).toLocaleTimeString()) : 'données fraîches';
-  var html = '<span class="num">' + total + '</span>périphériques&nbsp;&nbsp;'
+  var html = '<span class="num">' + present + '</span>présents&nbsp;&nbsp;'
     + '<span class="num" style="color:#721c24">' + errors + '</span>en erreur&nbsp;&nbsp;'
     + '<span class="num" style="color:#383d41">' + disabled + '</span>désactivés&nbsp;&nbsp;'
-    + '<span class="num" style="color:#856404">' + unknown + '</span>inconnus'
+    + '<span class="num" style="color:#aaa">' + ghosts + '</span>absents (CM_PROB 45)'
     + '<span style="float:right; color:#888; font-size:11px">' + info + '</span>';
   var s = document.getElementById('devSummary');
   s.innerHTML = html;
@@ -381,13 +388,10 @@ function renderDevSummary(cached, lastCheck) {
 function renderDevices() {
   var q = (document.getElementById('devFilter').value || '').toLowerCase();
   var errorsOnly = document.getElementById('devErrorsOnly').checked;
+  var showGhosts = document.getElementById('devShowGhosts').checked;
   var list = allDevices.slice();
-  if (errorsOnly) {
-    list = list.filter(function (d) {
-      var s = (d.Status || '').toString().toLowerCase();
-      return s === 'error' || (d.Problem && d.Problem !== 0);
-    });
-  }
+  if (!showGhosts) list = list.filter(function (d) { return !isGhost(d); });
+  if (errorsOnly) list = list.filter(isRealError);
   if (q) {
     list = list.filter(function (d) {
       return ['Status','Class','FriendlyName','InstanceId','Manufacturer','ProblemDescription']
@@ -463,6 +467,7 @@ document.getElementById('devLoadBtn').addEventListener('click', function () { lo
 document.getElementById('devRefreshBtn').addEventListener('click', function () { loadDevices(true); });
 document.getElementById('devFilter').addEventListener('input', renderDevices);
 document.getElementById('devErrorsOnly').addEventListener('change', renderDevices);
+document.getElementById('devShowGhosts').addEventListener('change', renderDevices);
 
 refreshAgents();
 </script>
