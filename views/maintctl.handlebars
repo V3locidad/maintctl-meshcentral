@@ -948,19 +948,18 @@ function renderDrivers() {
   var html = '';
   availableDrivers.forEach(function (d) {
     var sel = (selectedDriver === d.name);
-    var icon = (d.type === 'folder') ? '📁' : '🗜️';
     var typeBadge = (d.type === 'folder')
-      ? ('<span class="badge">' + d.fileCount + ' fichier' + (d.fileCount > 1 ? 's' : '') + (d.hasInf ? '' : ' ⚠ pas de .inf') + '</span>')
+      ? ('<span class="badge">dossier · ' + d.fileCount + ' fichier' + (d.fileCount > 1 ? 's' : '') + (d.hasInf ? '' : ' — pas de .inf') + '</span>')
       : '<span class="badge">.zip</span>';
     html += '<div class="row' + (sel ? ' selected' : '') + '" data-name="' + escapeHtml(d.name) + '">'
       + '<input type="radio" name="drvPick" ' + (sel ? 'checked' : '') + '>'
       + '<div class="main">'
-      + '<div class="title">' + icon + ' ' + escapeHtml(d.name) + '</div>'
+      + '<div class="title">' + escapeHtml(d.name) + '</div>'
       + '<div class="sub">' + typeBadge
       + '<span class="badge">' + fmtBytes(d.size) + '</span>'
       + '<span class="badge">' + escapeHtml(fmtMtime(d.mtime)) + '</span></div>'
       + '</div>'
-      + '<button class="drvDelBtn" data-name="' + escapeHtml(d.name) + '" title="Supprimer du NAS">🗑</button>'
+      + '<button class="drvDelBtn" data-name="' + escapeHtml(d.name) + '" title="Supprimer du NAS">✕</button>'
       + '</div>';
   });
   body.innerHTML = html;
