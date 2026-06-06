@@ -547,14 +547,24 @@ function buildPsDriverInstall(zipPath, extractDir) {
         + '  if (-not (Test-Path \'' + zipE + '\')) { throw "zip introuvable" }'
         + '  if (Test-Path \'' + dirE + '\') { Remove-Item \'' + dirE + '\' -Recurse -Force -ErrorAction SilentlyContinue }'
         + '  New-Item -ItemType Directory -Path \'' + dirE + '\' -Force | Out-Null;'
-        + '  Expand-Archive -LiteralPath \'' + zipE + '\' -DestinationPath \'' + dirE + '\' -Force;'
+        // Préfère tar.exe (bsdtar, Win10 1803+) — beaucoup plus rapide qu'Expand-Archive sur gros zips.
+        + '  $tar = "$env:SystemRoot\\System32\\tar.exe";'
+        + '  $useTar = Test-Path $tar;'
+        + '  Write-Host ("MAINTCTL_EXTRACT:" + $(if ($useTar) { "tar" } else { "expand-archive" }));'
+        + '  $t0 = Get-Date;'
+        + '  if ($useTar) {'
+        + '    Push-Location \'' + dirE + '\';'
+        + '    try { & $tar -xf \'' + zipE + '\'; if ($LASTEXITCODE -ne 0) { throw "tar code $LASTEXITCODE" } } finally { Pop-Location }'
+        + '  } else {'
+        + '    Expand-Archive -LiteralPath \'' + zipE + '\' -DestinationPath \'' + dirE + '\' -Force;'
+        + '  }'
+        + '  Write-Host ("MAINTCTL_EXTRACT_SEC:" + [int]((Get-Date) - $t0).TotalSeconds);'
         + '  $infs = Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue;'
         + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
         + '  if ($infs.Count -eq 0) { Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
         + '  $out = & pnputil.exe /add-driver "' + dirQ + '\\*.inf" /install /subdirs 2>&1 | Out-String;'
         + '  $code = $LASTEXITCODE;'
         + '  Write-Host $out;'
-        // oemNN.inf publishing is identique en EN/FR
         + '  $installed = ([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count;'
         + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
         + '  Write-Host ("MAINTCTL_EXIT:" + $code);'
@@ -617,7 +627,7 @@ function doDriverInstall(data) {
     var extractDir = tmpRoot + '\\maintctl_drv_' + ts;
 
     function runInstall(script, cleanupExtras) {
-        runPowerShell(script, 15 * 60 * 1000, function (ok, _bytes, log) {
+        runPowerShell(script, 30 * 60 * 1000, function (ok, _bytes, log) {
             (cleanupExtras || []).forEach(function (p) { try { fs.unlinkSync(p); } catch (_) {} });
             var installed = 0, code = -1;
             var m1 = (log || '').match(/MAINTCTL_INSTALLED:(\d+)/);
@@ -675,7 +685,7 @@ function doDriverInstall(data) {
             reply({ pluginaction: 'driverInstallComplete', dispatchId: data.dispatchId, ok: false, error: 'download: ' + err.message });
             return;
         }
-        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'install' });
+        reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'extract + install (peut prendre 5-15 min sur gros pack)' });
         runInstall(buildPsDriverInstall(zipPath, extractDir), [zipPath]);
     });
 }
