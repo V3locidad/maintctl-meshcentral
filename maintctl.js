@@ -438,6 +438,32 @@ module.exports.maintctl = function (parent) {
             return sendJson(res, 200, { ok: true, runs: Object.keys(runs).length });
         }
 
+        if (action === 'nodeHistory') {
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            const kind = String((req.query && req.query.kind) || 'driver');
+            if (!nodeId) return sendJson(res, 400, { error: 'nodeId requis' });
+            const out = [];
+            Object.values(runs).forEach((r) => {
+                if (!r || r.kind !== kind) return;
+                const res2 = r.results && r.results[nodeId];
+                if (!res2) return;
+                out.push({
+                    runId: r.id,
+                    timestamp: r.timestamp,
+                    user: r.user,
+                    driver: r.driver,
+                    status: res2.status,
+                    step: res2.step,
+                    installed: res2.installed,
+                    errors: res2.errors,
+                    rebootRequired: res2.rebootRequired,
+                    error: res2.error,
+                });
+            });
+            out.sort((a, b) => b.timestamp - a.timestamp);
+            return sendJson(res, 200, { nodeId: nodeId, runs: out.slice(0, 50) });
+        }
+
         if (action === 'agents') {
             return listAgents(function (err, agents, meshes) {
                 if (err) return sendJson(res, 500, { error: err.message });
