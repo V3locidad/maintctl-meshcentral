@@ -228,7 +228,7 @@
   <div id="drvResults" class="results">
     <table>
       <thead><tr>
-        <th>Poste</th><th>Statut</th><th>Étape</th><th>Pilotes installés</th><th>Reboot</th>
+        <th>Poste</th><th>Statut</th><th>Étape</th><th>Pilotes installés</th><th title="Le plugin ne redémarre JAMAIS le poste — colonne purement informative (3010 = recommandé par pnputil)">Redémarrage</th>
       </tr></thead>
       <tbody id="drvResultsBody"></tbody>
     </table>
@@ -1141,7 +1141,9 @@ function renderDrvResults(run) {
     else statusCell = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">erreur</span>';
     var step = r.step || '';
     var installed = (typeof r.installed === 'number') ? String(r.installed) : '—';
-    var reboot = r.rebootRequired ? '<span class="resCell run">oui</span>' : (r.status === 'done' ? '<span class="resCell ok">non</span>' : '—');
+    var reboot = r.rebootRequired
+      ? '<span class="resCell run" title="pnputil a renvoyé 3010 — le poste n\'a PAS été redémarré, mais un redémarrage manuel est conseillé pour finaliser certains pilotes">recommandé</span>'
+      : (r.status === 'done' ? '<span class="resCell ok">non</span>' : '—');
     rows += '<tr><td>' + escapeHtml(name) + '</td>'
       + '<td>' + statusCell + '</td>'
       + '<td>' + escapeHtml(step) + (r.error && r.status === 'error' ? '<div style="color:#721c24; font-size:11px">' + escapeHtml(r.error) + '</div>' : '') + '</td>'

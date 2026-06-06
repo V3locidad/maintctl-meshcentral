@@ -537,17 +537,45 @@ function doDevAction(data) {
 //   0    = ERROR_SUCCESS
 //   3010 = ERROR_SUCCESS_REBOOT_REQUIRED (toujours OK, reboot requis)
 //   259  = ERROR_NO_MORE_ITEMS (rien à installer) → on remonte ok=false
+// Bloc PS commun : itère les .inf un par un et écrit la progression dans progressFile
+// (lu côté JS pour remonter à MC pendant que pnputil tourne).
+// Itérer permet : (a) progress lisible, (b) si un .inf échoue, les suivants continuent.
+function buildPsInstallLoop(dirE, progressE) {
+    return ''
+        + '  $progress = \'' + progressE + '\';'
+        + '  "extract: scanning .inf" | Out-File -FilePath $progress -Encoding ASCII -Force;'
+        + '  $infs = @(Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue);'
+        + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
+        + '  if ($infs.Count -eq 0) { "done: aucun .inf detecte" | Out-File -FilePath $progress -Encoding ASCII -Force; Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
+        + '  $installed = 0; $errors = 0; $reboot = $false; $i = 0;'
+        + '  foreach ($inf in $infs) {'
+        + '    $i++;'
+        + '    ("install: " + $i + "/" + $infs.Count + " " + $inf.Name) | Out-File -FilePath $progress -Encoding ASCII -Force;'
+        + '    $out = & pnputil.exe /add-driver $inf.FullName /install 2>&1 | Out-String;'
+        + '    $c = $LASTEXITCODE;'
+        + '    if (([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count -gt 0) { $installed++ }'
+        + '    if ($c -eq 3010) { $reboot = $true }'
+        + '    elseif ($c -ne 0 -and $c -ne 259) { $errors++ }'
+        + '  }'
+        + '  ("done: " + $installed + " installe(s), " + $errors + " erreur(s)") | Out-File -FilePath $progress -Encoding ASCII -Force;'
+        + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
+        + '  Write-Host ("MAINTCTL_ERRORS:" + $errors);'
+        + '  $exitCode = 0; if ($reboot) { $exitCode = 3010 }'
+        + '  Write-Host ("MAINTCTL_EXIT:" + $exitCode);';
+}
+
 function buildPsDriverInstall(zipPath, extractDir) {
     var zipE = zipPath.replace(/'/g, "''");
     var dirE = extractDir.replace(/'/g, "''");
-    var dirQ = extractDir.replace(/"/g, '""');
+    var progressE = (extractDir + '\\_maintctl_progress.txt').replace(/'/g, "''");
     return ''
         + '$ErrorActionPreference = "Stop";'
         + 'try {'
         + '  if (-not (Test-Path \'' + zipE + '\')) { throw "zip introuvable" }'
         + '  if (Test-Path \'' + dirE + '\') { Remove-Item \'' + dirE + '\' -Recurse -Force -ErrorAction SilentlyContinue }'
         + '  New-Item -ItemType Directory -Path \'' + dirE + '\' -Force | Out-Null;'
-        // Préfère tar.exe (bsdtar, Win10 1803+) — beaucoup plus rapide qu'Expand-Archive sur gros zips.
+        + '  $progress = \'' + progressE + '\';'
+        + '  "extract: starting" | Out-File -FilePath $progress -Encoding ASCII -Force;'
         + '  $tar = "$env:SystemRoot\\System32\\tar.exe";'
         + '  $useTar = Test-Path $tar;'
         + '  Write-Host ("MAINTCTL_EXTRACT:" + $(if ($useTar) { "tar" } else { "expand-archive" }));'
@@ -559,34 +587,18 @@ function buildPsDriverInstall(zipPath, extractDir) {
         + '    Expand-Archive -LiteralPath \'' + zipE + '\' -DestinationPath \'' + dirE + '\' -Force;'
         + '  }'
         + '  Write-Host ("MAINTCTL_EXTRACT_SEC:" + [int]((Get-Date) - $t0).TotalSeconds);'
-        + '  $infs = Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue;'
-        + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
-        + '  if ($infs.Count -eq 0) { Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
-        + '  $out = & pnputil.exe /add-driver "' + dirQ + '\\*.inf" /install /subdirs 2>&1 | Out-String;'
-        + '  $code = $LASTEXITCODE;'
-        + '  Write-Host $out;'
-        + '  $installed = ([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count;'
-        + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
-        + '  Write-Host ("MAINTCTL_EXIT:" + $code);'
+        + buildPsInstallLoop(dirE, progressE)
         + '} catch { Write-Host ("ERR: " + $_.Exception.Message); Write-Host "MAINTCTL_EXIT:1"; exit 1 }';
 }
 
 // pnputil sur un dossier déjà extrait (pas de Expand-Archive).
 function buildPsDriverInstallDir(extractDir) {
     var dirE = extractDir.replace(/'/g, "''");
-    var dirQ = extractDir.replace(/"/g, '""');
+    var progressE = (extractDir + '\\_maintctl_progress.txt').replace(/'/g, "''");
     return ''
         + '$ErrorActionPreference = "Stop";'
         + 'try {'
-        + '  $infs = Get-ChildItem -Path \'' + dirE + '\' -Filter *.inf -Recurse -ErrorAction SilentlyContinue;'
-        + '  Write-Host ("MAINTCTL_INFS:" + $infs.Count);'
-        + '  if ($infs.Count -eq 0) { Write-Host "MAINTCTL_EXIT:259"; exit 0 }'
-        + '  $out = & pnputil.exe /add-driver "' + dirQ + '\\*.inf" /install /subdirs 2>&1 | Out-String;'
-        + '  $code = $LASTEXITCODE;'
-        + '  Write-Host $out;'
-        + '  $installed = ([regex]::Matches($out, "(?i)oem\\d+\\.inf")).Count;'
-        + '  Write-Host ("MAINTCTL_INSTALLED:" + $installed);'
-        + '  Write-Host ("MAINTCTL_EXIT:" + $code);'
+        + buildPsInstallLoop(dirE, progressE)
         + '} catch { Write-Host ("ERR: " + $_.Exception.Message); Write-Host "MAINTCTL_EXIT:1"; exit 1 }';
 }
 
@@ -627,20 +639,41 @@ function doDriverInstall(data) {
     var extractDir = tmpRoot + '\\maintctl_drv_' + ts;
 
     function runInstall(script, cleanupExtras) {
+        // Polling du fichier de progression écrit par PowerShell.
+        // Permet de remonter "install: 12/45 NomDriver.inf" en temps réel,
+        // et donne un état frais à MC dès que le MeshAgent récupère sa WS
+        // (perte typique pendant l'install d'un pilote réseau).
+        var progressFile = extractDir + '\\_maintctl_progress.txt';
+        var lastSent = '';
+        var pollTimer = setInterval(function () {
+            try {
+                var p = fs.readFileSync(progressFile, 'utf8');
+                if (p) { p = p.replace(/[\r\n]+$/, ''); }
+                if (p && p !== lastSent) {
+                    lastSent = p;
+                    reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: p });
+                }
+            } catch (_) {}
+        }, 4000);
+
         runPowerShell(script, 30 * 60 * 1000, function (ok, _bytes, log) {
+            try { clearInterval(pollTimer); } catch (_) {}
             (cleanupExtras || []).forEach(function (p) { try { fs.unlinkSync(p); } catch (_) {} });
-            var installed = 0, code = -1;
+            var installed = 0, errors = 0, code = -1;
             var m1 = (log || '').match(/MAINTCTL_INSTALLED:(\d+)/);
             if (m1) installed = parseInt(m1[1], 10) || 0;
+            var mE = (log || '').match(/MAINTCTL_ERRORS:(\d+)/);
+            if (mE) errors = parseInt(mE[1], 10) || 0;
             var m2 = (log || '').match(/MAINTCTL_EXIT:(-?\d+)/);
             if (m2) code = parseInt(m2[1], 10);
             var reboot = (code === 3010);
             var success = ok && (code === 0 || code === 3010) && installed > 0;
             var errMsg = '';
-            if (!ok) errMsg = 'PowerShell échoué';
-            else if (code === 259) errMsg = 'Aucun .inf détecté';
+            if (!ok) errMsg = 'PowerShell échoué (timeout ?)';
+            else if (code === 259) errMsg = 'Aucun .inf détecté dans le pack';
             else if (installed === 0) errMsg = 'pnputil n\'a publié aucun pilote (code ' + code + ')';
-            else if (code !== 0 && code !== 3010) errMsg = 'pnputil code ' + code;
+            else if (errors > 0) errMsg = errors + ' .inf en erreur (' + installed + ' installés)';
+            // Cleanup : toujours sur succès, sinon on garde extractDir pour debug RDP
             if (success) {
                 try {
                     require('child_process').execFile(
@@ -649,15 +682,26 @@ function doDriverInstall(data) {
                     );
                 } catch (_) {}
             }
-            reply({
+            // Renvoi répété : si la WS MC est coupée (installation pilote réseau),
+            // SendCommand est silencieusement perdu. On réémet le résultat à intervalles
+            // pendant ~10 min — quand l'agent récupère sa WS, MC reçoit le complete.
+            // Idempotent côté serveur (dispatchId fixe, écrit dans results[nodeId]).
+            var finalPayload = {
                 pluginaction: 'driverInstallComplete',
                 dispatchId: data.dispatchId,
                 ok: success,
                 installed: installed,
+                errors: errors,
                 rebootRequired: reboot,
                 error: success ? undefined : errMsg,
                 logTail: (log || '').slice(-3000)
-            });
+            };
+            var attempts = 0;
+            (function tick() {
+                reply(finalPayload);
+                attempts++;
+                if (attempts < 20) setTimeout(tick, 30000); // 20 × 30s = 10 min
+            })();
         });
     }
 
