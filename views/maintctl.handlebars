@@ -445,7 +445,9 @@ function renderAgents() {
       + '<div class="main">'
       + '<div class="title">' + escapeHtml(a.name) + '</div>'
       + '<div class="sub"><span class="badge">' + escapeHtml(a.mesh || '?') + '</span>'
-      + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span></div>'
+      + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span>'
+      + (a.model ? '<span class="badge" title="Modèle PC">' + escapeHtml(a.model) + '</span>' : '')
+      + '</div>'
       + '</div></div>';
   });
   body.innerHTML = html;
@@ -898,7 +900,9 @@ function renderDrvAgents() {
       + '<div class="main">'
       + '<div class="title">' + escapeHtml(a.name) + '</div>'
       + '<div class="sub"><span class="badge">' + escapeHtml(a.mesh || '?') + '</span>'
-      + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span></div>'
+      + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span>'
+      + (a.model ? '<span class="badge" title="Modèle PC">' + escapeHtml(a.model) + '</span>' : '')
+      + '</div>'
       + '</div></div>';
   });
   body.innerHTML = html;

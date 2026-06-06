@@ -44,6 +44,33 @@ const AGENT_TYPE = {
     11: 'Android', 12: 'iOS',
 };
 
+// Dérive un libellé court "Marque Modèle" depuis un doc sysinfo MeshCentral.
+// Tente plusieurs emplacements connus selon la version MC et l'OS.
+function deriveModel(sys) {
+    if (!sys) return '';
+    const hw = sys.hardware || {};
+    let manuf = '', product = '';
+    // 1) Windows WMI Win32_ComputerSystem (chemin MC le plus courant)
+    const cs = hw.windows && (Array.isArray(hw.windows.computerSystem) ? hw.windows.computerSystem[0] : hw.windows.computerSystem);
+    if (cs) { manuf = cs.Manufacturer || ''; product = cs.Model || ''; }
+    // 2) DMI/SMBIOS via identifiers (cross-OS)
+    if (!product) {
+        const id = hw.identifiers || {};
+        manuf = manuf || id.system_manufacturer || id.board_vendor || id.bios_vendor || '';
+        product = id.system_product_name || id.product_name || id.board_name || '';
+    }
+    manuf = String(manuf || '').trim();
+    product = String(product || '').trim();
+    // Nettoyage : retire suffixes bruyants
+    product = product.replace(/\s+(Desktop Mini PC|Mini Tower|Desktop|Tower|PC|Workstation)$/i, '').trim();
+    // Si le produit commence déjà par la marque, on évite la duplication
+    const manufShort = manuf.replace(/\s+(Inc\.?|Corp\.?|Computer|Computers|Co\.?|Ltd\.?)$/i, '').trim();
+    if (!manufShort) return product;
+    if (!product) return manufShort;
+    if (product.toLowerCase().indexOf(manufShort.toLowerCase()) === 0) return product;
+    return (manufShort + ' ' + product).trim();
+}
+
 function newDownloadToken(kind, payload) {
     const t = crypto.randomBytes(24).toString('hex');
     downloadTokens[t] = { kind: kind, payload: payload || null, expires: Date.now() + DOWNLOAD_TTL_MS };
@@ -94,8 +121,7 @@ module.exports.maintctl = function (parent) {
             if (meshErr) return cb(meshErr);
             const meshById = {};
             (meshDocs || []).forEach((m) => { if (m && m._id) meshById[m._id] = m.name || m._id; });
-            db.GetAllType('node', function (err, docs) {
-                if (err) return cb(err);
+            const buildAgents = (sysById) => (docs) => {
                 const agents = (docs || []).filter((d) => d && d._id && (d.agent || d.osdesc)).map((d) => {
                     const family = (d.agent && AGENT_TYPE[d.agent.id]) || '';
                     return {
@@ -105,13 +131,30 @@ module.exports.maintctl = function (parent) {
                         mesh: meshById[d.meshid] || '',
                         os: d.osdesc || family || '?',
                         family: family,
+                        model: deriveModel(sysById[d._id]),
                         online: !!wsagents[d._id],
                     };
                 });
-                agents.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
-                const meshes = Object.keys(meshById).map((id) => ({ id: id, name: meshById[id] }));
-                meshes.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
-                cb(null, agents, meshes);
+                return agents;
+            };
+            db.GetAllType('sysinfo', function (sErr, sysDocs) {
+                const sysById = {};
+                if (!sErr && Array.isArray(sysDocs)) {
+                    sysDocs.forEach((s) => {
+                        if (!s || !s._id) return;
+                        // _id format: 'si<nodeId>' ou directement le nodeId selon version MC
+                        const nid = (typeof s._id === 'string' && s._id.indexOf('si') === 0) ? s._id.slice(2) : s._id;
+                        sysById[nid] = s;
+                    });
+                }
+                db.GetAllType('node', function (err, docs) {
+                    if (err) return cb(err);
+                    const agents = buildAgents(sysById)(docs);
+                    agents.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
+                    const meshes = Object.keys(meshById).map((id) => ({ id: id, name: meshById[id] }));
+                    meshes.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
+                    cb(null, agents, meshes);
+                });
             });
         });
     }
