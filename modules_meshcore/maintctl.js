@@ -14,11 +14,16 @@
 var mesh = null;
 
 function dbg(m) {
+    // Écrit à un chemin connu et fixe (et pas via createWriteStream qui
+    // n'est pas dispo dans Duktape). Append manuel via readFileSync+writeFileSync.
     try {
         var fs = require('fs');
-        var s = fs.createWriteStream('maintctl.txt', { flags: 'a' });
-        s.write('\n' + new Date().toLocaleString() + ': ' + m);
-        s.end('\n');
+        var p = 'C:\\Windows\\Temp\\maintctl-agent.log';
+        var prev = '';
+        try { prev = fs.readFileSync(p).toString(); } catch (_) {}
+        if (prev.length > 200000) prev = prev.slice(-100000); // rotation simple
+        var line = new Date().toISOString() + ' ' + m + '\r\n';
+        fs.writeFileSync(p, prev + line);
     } catch (e) {}
 }
 
@@ -194,6 +199,7 @@ function buildDelprof2Args(days) {
 // Download via PowerShell pour bypasser le certificat auto-signé de MC
 // (la stack TLS de Duktape ignore rejectUnauthorized et plante au handshake).
 function downloadFile(url, dest, cb) {
+    dbg('downloadFile start url=' + url + ' dest=' + dest);
     var fs = require('fs');
     var cp = require('child_process');
     var done = false;
@@ -225,6 +231,7 @@ function downloadFile(url, dest, cb) {
     if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
     if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
     child.on('exit', function () {
+        dbg('downloadFile child exited, log=' + log.trim().slice(0, 200));
         try { fs.unlinkSync(ps1); } catch (_) {}
         if (!fs.existsSync(dest)) return finish(new Error('download failed: ' + log.trim()));
         var st;
@@ -233,10 +240,12 @@ function downloadFile(url, dest, cb) {
             try { fs.unlinkSync(dest); } catch (_) {}
             return finish(new Error('downloaded file empty: ' + log.trim()));
         }
+        dbg('downloadFile OK size=' + st.size);
         finish(null);
     });
     setTimeout(function () {
         if (done) return;
+        dbg('downloadFile TIMEOUT');
         try { child.kill(); } catch (_) {}
         try { fs.unlinkSync(ps1); } catch (_) {}
         finish(new Error('download timeout'));
@@ -249,6 +258,7 @@ function downloadFile(url, dest, cb) {
 // dans Duktape (DelProf2 ne ferme pas stdio proprement même avec /u).
 // On lit l'exit code via -PassThru, et le delta de place libre sur C:.
 function runDelprof2(exePath, days, timeoutMs, onDone) {
+    dbg('runDelprof2 start exe=' + exePath + ' days=' + days);
     var fs = require('fs');
     var cp = require('child_process');
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -302,14 +312,15 @@ function runDelprof2(exePath, days, timeoutMs, onDone) {
         var freedMatch = log.match(/MAINTCTL_FREED:(\d+)/);
         var exitCode = exitMatch ? parseInt(exitMatch[1], 10) : -1;
         var freed = freedMatch ? parseInt(freedMatch[1], 10) : 0;
-        // DelProf2 : 0 = OK. /i = ignore errors donc devrait toujours sortir 0.
         var ok = (exitCode === 0);
         var removed = (log.match(/Deleted profile:/gi) || []).length;
+        dbg('runDelprof2 finish ok=' + ok + ' exitCode=' + exitCode + ' freed=' + freed + ' removed=' + removed + ' logLen=' + log.length);
         onDone(ok, freed, removed, log);
     }
-    child.on('exit', finish);
+    child.on('exit', function () { dbg('runDelprof2 child exited'); finish(); });
     setTimeout(function () {
         if (done) return;
+        dbg('runDelprof2 TIMEOUT after ' + Math.round(timeoutMs / 1000) + 's');
         try { child.kill(); } catch (_) {}
         log += '\nMAINTCTL_ERR: timeout après ' + Math.round(timeoutMs / 1000) + 's';
         finish();
@@ -370,23 +381,29 @@ function runPowerShell(script, timeoutMs, onDone) {
 }
 
 function doProfilesTask(data, profileDays, cb) {
+    dbg('doProfilesTask start days=' + profileDays + ' url=' + (data.delprof2Url || '(empty)'));
     var fs = require('fs');
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    dbg('doProfilesTask tmpRoot=' + tmpRoot);
     var exePath = tmpRoot + '\\maintctl_DelProf2.exe';
     var url = data.delprof2Url || '';
-    if (!url) return cb(false, 0, 0, 'delprof2Url manquant — serveur n\'a pas envoyé l\'URL (baseUrl pas encore captée ?)');
+    if (!url) { dbg('doProfilesTask ABORT no url'); return cb(false, 0, 0, 'delprof2Url manquant'); }
 
     try { if (fs.existsSync(exePath)) fs.unlinkSync(exePath); } catch (_) {}
+    dbg('doProfilesTask downloading from ' + url);
     downloadFile(url, exePath, function (err) {
-        if (err) return cb(false, 0, 0, 'download DelProf2 échoué: ' + err.message);
-        if (!fs.existsSync(exePath)) return cb(false, 0, 0, 'DelProf2 introuvable après download');
+        if (err) { dbg('doProfilesTask DL err: ' + err.message); return cb(false, 0, 0, 'download DelProf2 échoué: ' + err.message); }
+        if (!fs.existsSync(exePath)) { dbg('doProfilesTask DL ok mais exe absent'); return cb(false, 0, 0, 'DelProf2 introuvable après download'); }
+        dbg('doProfilesTask DL ok, exe=' + exePath + ' running...');
         runDelprof2(exePath, profileDays, 30 * 60 * 1000, function (ok, freed, removed, log) {
+            dbg('doProfilesTask DONE ok=' + ok + ' freed=' + freed + ' removed=' + removed + ' logTail=' + (log || '').slice(-300).replace(/[\r\n]+/g, ' | '));
             cb(ok, freed, removed, log);
         });
     });
 }
 
 function doClean(data) {
+    dbg('doClean platform=' + process.platform + ' tasksType=' + (typeof data.tasks) + ' tasks=' + JSON.stringify(data.tasks) + ' did=' + (data.dispatchId || '(none)') + ' hasUrl=' + (!!data.delprof2Url));
     if (process.platform !== 'win32') {
         reply({ pluginaction: 'cleanComplete', dispatchId: data.dispatchId, ok: false, error: 'maintctl: Windows only' });
         return;
