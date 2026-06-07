@@ -180,9 +180,6 @@
     <button id="refreshBtn">Rafraîchir</button>
     <span id="selCount" class="pill">0 poste(s) sélectionné(s)</span>
     <span style="flex:1"></span>
-    <label>Profils inactifs depuis :
-      <input id="profileDays" type="number" value="90" min="7" max="3650" style="width:70px"> jours
-    </label>
     <button id="runBtn" class="primary" disabled>Lancer le nettoyage</button>
   </div>
 
@@ -211,8 +208,14 @@
         <label><input type="checkbox" class="taskCheck" value="dism">
           <div>DISM / Windows.old<div class="desc">Long (10-30 min)</div></div>
         </label>
-        <label><input type="checkbox" class="taskCheck" value="profiles">
-          <div>Profils utilisateurs anciens<div class="desc">Natif PowerShell (Win32_UserProfile). Protégés : Administrator, Administrateur, admin, maintenance, comptes système.</div></div>
+        <label><input type="checkbox" class="taskCheck" value="profiles" id="profilesCheck">
+          <div>Profils utilisateurs anciens
+            <div class="desc">
+              Inactifs depuis
+              <input id="profileDays" type="number" value="90" min="7" max="3650" style="width:55px; font-size:11px; padding:1px 4px" onclick="event.stopPropagation()"> jours.
+              Protégés : Administrator, Administrateur, admin, maintenance, comptes système.
+            </div>
+          </div>
         </label>
       </div>
     </div>
@@ -609,10 +612,19 @@ function runClean() {
   var tasks = selectedTasks();
   if (!nodes.length || !tasks.length) return;
   var profileDays = parseInt(document.getElementById('profileDays').value, 10) || 90;
-  var confirmMsg = 'Lancer ' + tasks.join(', ') + ' sur ' + nodes.length + ' poste(s) ?'
-    + (tasks.indexOf('profiles') >= 0 ? '\n\nProfils inactifs depuis ' + profileDays + ' jours seront SUPPRIMÉS.' : '')
-    + (tasks.indexOf('dism') >= 0 ? '\n\nDISM peut prendre 10-30 min par poste.' : '');
-  if (!window.confirm(confirmMsg)) return;
+  var lines = ['Lancer sur ' + nodes.length + ' poste(s) :'];
+  tasks.forEach(function (t) {
+    if (t === 'temp') lines.push('  • Fichiers temporaires');
+    else if (t === 'browser') lines.push('  • Caches navigateurs');
+    else if (t === 'dism') lines.push('  • DISM / Windows.old (10-30 min)');
+    else if (t === 'profiles') lines.push('  • Profils utilisateurs inactifs depuis plus de ' + profileDays + ' jours → SUPPRESSION');
+    else lines.push('  • ' + t);
+  });
+  if (tasks.indexOf('profiles') >= 0) {
+    lines.push('');
+    lines.push('⚠ La suppression de profils est irréversible.');
+  }
+  if (!window.confirm(lines.join('\n'))) return;
   var payload = JSON.stringify({ nodes: nodes, tasks: tasks, profileDays: profileDays });
   getJson(BASE + '&action=run&payload=' + encodeURIComponent(payload)).then(function (r) {
     if (r.error) { alert('Erreur: ' + r.error); return; }
