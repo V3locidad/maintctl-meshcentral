@@ -917,6 +917,7 @@ function renderDrvAgents() {
       + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span>'
       + (a.model ? '<span class="badge" title="Modèle PC">' + escapeHtml(a.model) + '</span>' : '')
       + '</div>'
+      + '</div>'
       + '<button class="drvHistBtn" data-id="' + a.id + '" title="Historique des installations sur ce poste">Hist</button>'
       + '</div>';
   });
