@@ -425,6 +425,10 @@ function buildPsProfileClean(days, excludeList) {
     }).join(',');
     return ''
         + '$ErrorActionPreference = "SilentlyContinue";'
+        // Défensif : annule tout reboot programmé (shutdown /r /t N) qui
+        // pourrait fire pendant la tâche. Windows Update peut en programmer
+        // un automatiquement si pendingReboot est en attente.
+        + 'try { & "$env:SystemRoot\\System32\\shutdown.exe" /a } catch {}'
         + 'try {'
         + '  $cutoff = (Get-Date).AddDays(-' + (parseInt(days, 10) || 90) + ');'
         + '  $excl = @(' + exclLit + ');'
@@ -435,19 +439,30 @@ function buildPsProfileClean(days, excludeList) {
         + '    if ($p.Special) { continue }'
         + '    if ($p.Loaded)  { Write-Host ("SKIP loaded: " + $p.LocalPath); continue }'
         + '    if (-not $p.LocalPath) { continue }'
+        + '    if (-not (Test-Path $p.LocalPath)) { continue }'
         + '    $name = Split-Path -Leaf $p.LocalPath;'
         + '    $match = $false;'
         + '    foreach ($e in $excl) {'
-        + '      if ($e -like $name) { $match = $true; break }'  // wildcard ex "Default*"
+        + '      if ($e -like $name) { $match = $true; break }'
         + '      if ($name -eq $e)   { $match = $true; break }'
         + '    }'
         + '    if ($match) { Write-Host ("SKIP excluded: " + $p.LocalPath); continue }'
-        + '    if (-not $p.LastUseTime -or $p.LastUseTime -gt $cutoff) {'
-        + '      Write-Host ("SKIP recent: " + $p.LocalPath + " (LastUse: " + $p.LastUseTime + ")");'
+        // Vraie "dernière activité" du profil : LastWriteTime du NTUSER.DAT.
+        // Win32_UserProfile.LastUseTime est mis à jour à chaque boot pour
+        // tous les profils non chargés (bug Windows), donc inutilisable.
+        // NTUSER.DAT ne bouge que quand le user fait vraiment quelque chose.
+        + '    $hive = Join-Path $p.LocalPath "NTUSER.DAT";'
+        + '    $activity = $null;'
+        + '    if (Test-Path $hive) {'
+        + '      try { $activity = (Get-Item $hive -Force).LastWriteTime } catch {}'
+        + '    }'
+        + '    if (-not $activity) { $activity = $p.LastUseTime }'
+        + '    if (-not $activity -or $activity -gt $cutoff) {'
+        + '      Write-Host ("SKIP recent: " + $p.LocalPath + " (NTUSER.DAT: " + $activity + ")");'
         + '      continue;'
         + '    }'
         + '    try {'
-        + '      Write-Host ("DELETE: " + $p.LocalPath + " (LastUse: " + $p.LastUseTime + ")");'
+        + '      Write-Host ("DELETE: " + $p.LocalPath + " (NTUSER.DAT: " + $activity + ")");'
         + '      Remove-CimInstance -InputObject $p -ErrorAction Stop;'
         + '      $deleted++;'
         + '    } catch {'
@@ -457,6 +472,9 @@ function buildPsProfileClean(days, excludeList) {
         + '  }'
         + '  $after = (Get-PSDrive C).Free;'
         + '  $freed = [int64]($after - $before); if ($freed -lt 0) { $freed = 0 }'
+        // 2e tentative d'annulation en fin de tâche au cas où WU
+        // aurait reprogrammé un reboot après la suppression des profils.
+        + '  try { & "$env:SystemRoot\\System32\\shutdown.exe" /a } catch {}'
         + '  Write-Host ("MAINTCTL_DELETED:" + $deleted);'
         + '  Write-Host ("MAINTCTL_ERRORS:" + $errors);'
         + '  Write-Host ("MAINTCTL_FREED:" + $freed);'
