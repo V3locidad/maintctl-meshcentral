@@ -71,40 +71,89 @@ function deriveModel(sys) {
     return (manufShort + ' ' + product).trim();
 }
 
+// Trouve récursivement la valeur d'une clé (recherche case-insensitive) dans
+// un objet potentiellement profond. Utile car les versions MC rangent les
+// disques logiques et le LastBoot à des emplacements variés.
+function deepFindKey(obj, wantedLc, visited, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 8) return undefined;
+    visited = visited || new Set();
+    if (visited.has(obj)) return undefined;
+    visited.add(obj);
+    for (const k in obj) {
+        if (k.toLowerCase() === wantedLc) {
+            return obj[k];
+        }
+    }
+    for (const k in obj) {
+        const v = obj[k];
+        if (v && typeof v === 'object') {
+            const r = deepFindKey(v, wantedLc, visited, (depth || 0) + 1);
+            if (r !== undefined) return r;
+        }
+    }
+    return undefined;
+}
+
+// Récupère TOUS les objets qui ressemblent à un disque logique (ont DeviceID/
+// Caption/Name + Size/FreeSpace) en parcourant l'arbre.
+function deepFindLogicalDisks(obj, out, visited, depth) {
+    out = out || [];
+    if (!obj || typeof obj !== 'object' || depth > 8) return out;
+    visited = visited || new Set();
+    if (visited.has(obj)) return out;
+    visited.add(obj);
+    if (Array.isArray(obj)) {
+        obj.forEach((it) => deepFindLogicalDisks(it, out, visited, (depth || 0) + 1));
+        return out;
+    }
+    // Critère : objet qui a au moins un identifiant + une taille
+    const idLike = ['DeviceID','Caption','Name','DriveLetter'].find((k) => k in obj);
+    const sizeLike = ['Size','Capacity','Total','TotalBytes'].find((k) => k in obj);
+    const freeLike = ['FreeSpace','Free','AvailableBytes','CapacityRemaining'].find((k) => k in obj);
+    if (idLike && (sizeLike || freeLike)) {
+        out.push(obj);
+    }
+    Object.keys(obj).forEach((k) => {
+        if (obj[k] && typeof obj[k] === 'object') {
+            deepFindLogicalDisks(obj[k], out, visited, (depth || 0) + 1);
+        }
+    });
+    return out;
+}
+
+function pickFirst(obj, keys) {
+    for (let i = 0; i < keys.length; i++) {
+        if (obj[keys[i]] != null && obj[keys[i]] !== '') return obj[keys[i]];
+    }
+    return undefined;
+}
+
 // Extrait les métriques santé (disque C: + dernier boot) depuis un doc
-// sysinfo MeshCentral. Robuste aux variations de structure entre versions MC.
+// sysinfo MeshCentral. Recherche récursive, robuste aux variations de structure.
 function deriveHealth(sys) {
     const out = { diskFreeGB: null, diskTotalGB: null, diskFreePct: null, lastBoot: null, uptimeDays: null };
     if (!sys) return out;
-    const hw = sys.hardware || {};
-    const win = hw.windows || {};
-    // --- Disque C: ---
-    // Plusieurs emplacements possibles selon version MC : logicalDisks, drives, volumes
-    const candidates = [].concat(
-        Array.isArray(win.logicalDisks) ? win.logicalDisks : [],
-        Array.isArray(win.drives) ? win.drives : [],
-        Array.isArray(win.volumes) ? win.volumes : []
-    );
+    const disks = deepFindLogicalDisks(sys);
     let c = null;
-    for (let i = 0; i < candidates.length; i++) {
-        const d = candidates[i] || {};
-        const id = String(d.DeviceID || d.Caption || d.DriveLetter || d.Name || '').toUpperCase();
-        if (id.indexOf('C:') === 0) { c = d; break; }
+    for (let i = 0; i < disks.length; i++) {
+        const d = disks[i];
+        const id = String(pickFirst(d, ['DeviceID','Caption','Name','DriveLetter']) || '').toUpperCase();
+        if (id.indexOf('C:') === 0 || id === 'C') { c = d; break; }
     }
-    if (!c && candidates.length) c = candidates[0]; // fallback : 1er volume
+    if (!c && disks.length) c = disks[0]; // fallback
     if (c) {
-        const free = Number(c.FreeSpace || c.Free || c.AvailableBytes || 0);
-        const total = Number(c.Size || c.Total || c.TotalBytes || c.Capacity || 0);
+        const free = Number(pickFirst(c, ['FreeSpace','Free','AvailableBytes','CapacityRemaining']) || 0);
+        const total = Number(pickFirst(c, ['Size','Capacity','Total','TotalBytes']) || 0);
         if (total > 0) {
             out.diskFreeGB = +(free / 1073741824).toFixed(1);
             out.diskTotalGB = +(total / 1073741824).toFixed(1);
             out.diskFreePct = Math.round((free / total) * 100);
         }
     }
-    // --- LastBootUpTime ---
-    const osi = win.osInfo && (Array.isArray(win.osInfo) ? win.osInfo[0] : win.osInfo);
-    let lb = osi && (osi.LastBootUpTime || osi.LastBoot || osi.lastBoot);
-    if (!lb && win.lastBoot) lb = win.lastBoot;
+    // --- LastBootUpTime / dernier boot ---
+    let lb = deepFindKey(sys, 'lastbootuptime')
+          || deepFindKey(sys, 'lastboot')
+          || deepFindKey(sys, 'bootuptime');
     if (lb) {
         let bootMs = null;
         if (typeof lb === 'number') bootMs = lb < 1e12 ? lb * 1000 : lb;
@@ -586,6 +635,41 @@ module.exports.maintctl = function (parent) {
                 if (err) return sendJson(res, 500, { error: err.message });
                 sendJson(res, 200, { agents: agents, meshes: meshes || [] });
             });
+        }
+
+        if (action === 'healthDebug') {
+            // Debug : renvoie le sysinfo brut + ce que deriveHealth en extrait,
+            // pour un nodeId. ?nodeId=...
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            if (!nodeId) return sendJson(res, 400, { error: 'nodeId requis' });
+            const db = obj.meshServer && obj.meshServer.db;
+            if (!db || typeof db.GetAllType !== 'function') return sendJson(res, 500, { error: 'DB inaccessible' });
+            db.GetAllType('sysinfo', function (sErr, sysDocs) {
+                if (sErr) return sendJson(res, 500, { error: sErr.message });
+                let found = null;
+                (sysDocs || []).forEach((s) => {
+                    if (!s || !s._id) return;
+                    const nid = (typeof s._id === 'string' && s._id.indexOf('si') === 0) ? s._id.slice(2) : s._id;
+                    if (nid === nodeId) found = s;
+                });
+                if (!found) return sendJson(res, 404, { error: 'sysinfo introuvable pour ' + nodeId });
+                const disks = deepFindLogicalDisks(found);
+                const lb = deepFindKey(found, 'lastbootuptime') || deepFindKey(found, 'lastboot') || deepFindKey(found, 'bootuptime');
+                return sendJson(res, 200, {
+                    derived: deriveHealth(found),
+                    disksFound: disks.map((d) => ({
+                        keys: Object.keys(d),
+                        DeviceID: d.DeviceID, Caption: d.Caption, Name: d.Name,
+                        Size: d.Size, FreeSpace: d.FreeSpace, Free: d.Free,
+                        Capacity: d.Capacity, CapacityRemaining: d.CapacityRemaining,
+                    })),
+                    lastBootRaw: lb,
+                    sysinfoTopKeys: Object.keys(found),
+                    sysinfoHardwareWindowsKeys: found.hardware && found.hardware.windows ? Object.keys(found.hardware.windows) : null,
+                    sysinfo: found,
+                });
+            });
+            return;
         }
 
         if (action === 'health') {
