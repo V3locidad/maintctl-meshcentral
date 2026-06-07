@@ -10,6 +10,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
+const http = require('http');
+const url = require('url');
 
 const HISTORY_MAX = 200;
 const RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6h
@@ -192,6 +195,194 @@ function deriveHealth(sys) {
         }
     }
     return out;
+}
+
+// --- GLPI Native Inventory ----------------------------------------------
+//
+// MC pousse un inventaire pour chaque poste sélectionné vers le endpoint
+// GLPI /front/inventory.php (format JSON). Pas besoin de GLPI Agent côté
+// poste, on utilise le sysinfo déjà collecté par MC.
+//
+// Config dans maintctl-config.json :
+//   "glpi": {
+//     "url": "https://glpi.exemple.com",
+//     "token": "optionnel — si Native Inventory protégé par token"
+//   }
+
+function loadGlpiConfig() {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'maintctl-config.json'), 'utf8'));
+        if (cfg && cfg.glpi && cfg.glpi.url) {
+            return { url: String(cfg.glpi.url).replace(/\/+$/, ''), token: cfg.glpi.token || '' };
+        }
+    } catch (_) {}
+    return null;
+}
+
+// Helpers de conversion bytes → MB et nettoyage strings
+function toMB(bytes) {
+    const n = Number(bytes || 0);
+    if (!n) return 0;
+    return Math.round(n / 1048576);
+}
+function clean(s) {
+    if (s == null) return '';
+    return String(s).trim();
+}
+
+// Transforme un sysinfo MeshCentral en payload Native Inventory GLPI.
+// Schéma : https://github.com/glpi-project/inventory_format
+function buildGlpiInventory(node, sys) {
+    const hw = (sys && sys.hardware) || {};
+    const win = hw.windows || {};
+    const ids = hw.identifiers || {};
+    const osi = win.osinfo || {};
+
+    const content = {
+        versionclient: 'maintctl-meshcentral',
+        hardware: {
+            name: clean(node.name),
+            uuid: clean(ids.product_uuid),
+            workgroup: clean(osi.Domain),
+            osname: clean(osi.Caption),
+            description: clean(osi.Description),
+        },
+        bios: {
+            bmanufacturer: clean(ids.bios_vendor),
+            bversion: clean(ids.bios_version),
+            bdate: clean(ids.bios_date),
+            smanufacturer: clean(ids.chassis_manufacturer || ids.system_manufacturer),
+            smodel: clean(ids.system_product_name),
+            ssn: clean(ids.chassis_serial || ids.bios_serial),
+            mmanufacturer: clean(ids.board_vendor),
+            mmodel: clean(ids.board_name),
+            msn: clean(ids.board_serial),
+        },
+        operatingsystem: {
+            kernel_name: 'Windows',
+            kernel_version: clean(osi.BuildRevision || osi.Version),
+            name: clean(osi.Caption),
+            version: clean(osi.Version),
+            arch: clean(osi.OSArchitecture),
+            install_date: clean(osi.InstallDate),
+            boot_time: clean(osi.LastBootUpTime),
+            fullname: clean(osi.Caption),
+        },
+        cpus: [],
+        memories: [],
+        storages: [],
+        drives: [],
+        videos: [],
+    };
+
+    // CPU
+    (Array.isArray(win.cpu) ? win.cpu : []).forEach((c) => {
+        content.cpus.push({
+            manufacturer: clean(c.Manufacturer),
+            name: clean(c.Name),
+            speed: Number(c.MaxClockSpeed || 0),
+            core: Number(c.NumberOfCores || 0),
+            thread: Number(c.NumberOfLogicalProcessors || 0),
+            arch: clean(c.Architecture),
+        });
+    });
+
+    // RAM (Capacity en bytes → MB)
+    (Array.isArray(win.memory) ? win.memory : []).forEach((m, i) => {
+        content.memories.push({
+            capacity: toMB(m.Capacity),
+            speed: Number(m.Speed || 0),
+            type: clean(m.SMBIOSMemoryType || m.MemoryType),
+            caption: clean(m.DeviceLocator),
+            description: clean(m.Description),
+            manufacturer: clean(m.Manufacturer),
+            serialnumber: clean(m.SerialNumber),
+            numslots: i + 1,
+        });
+    });
+
+    // Disques physiques
+    (Array.isArray(win.drives) ? win.drives : []).forEach((d) => {
+        content.storages.push({
+            name: clean(d.Caption),
+            description: clean(d.Caption),
+            model: clean(d.Model),
+            disksize: toMB(d.Size),
+            serialnumber: clean(d.SerialNumber),
+            type: clean(d.MediaType || 'disk'),
+        });
+    });
+
+    // Volumes logiques (C:, D:…)
+    if (win.volumes && typeof win.volumes === 'object') {
+        Object.keys(win.volumes).forEach((letter) => {
+            const v = win.volumes[letter];
+            if (!v || !v.size) return;
+            content.drives.push({
+                letter: letter + ':',
+                filesystem: clean(v.type),
+                total: toMB(v.size),
+                free: toMB(v.sizeremaining),
+                volumn: letter,
+            });
+        });
+    }
+
+    // GPU
+    (Array.isArray(win.gpu) ? win.gpu : []).forEach((g) => {
+        content.videos.push({
+            name: clean(g.Name),
+            resolution: (g.CurrentHorizontalResolution || g.CurrentVerticalResolution)
+                ? (g.CurrentHorizontalResolution + 'x' + g.CurrentVerticalResolution) : '',
+        });
+    });
+
+    // deviceid : identifiant unique par poste. Format GLPI Agent : NAME-DATETIME
+    const dt = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const deviceid = (clean(node.name) || node.id.slice(0, 12)) + '-'
+        + dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate())
+        + '-' + pad(dt.getHours()) + '-' + pad(dt.getMinutes()) + '-' + pad(dt.getSeconds());
+
+    return {
+        action: 'inventory',
+        deviceid: deviceid,
+        itemtype: 'Computer',
+        content: content,
+    };
+}
+
+// POST JSON vers une URL HTTPS/HTTP. Retourne { ok, status, body } via cb.
+function postJson(targetUrl, payload, headers, cb) {
+    let parsed;
+    try { parsed = url.parse(targetUrl); } catch (e) { return cb(e); }
+    const lib = (parsed.protocol === 'https:') ? https : http;
+    const body = Buffer.from(JSON.stringify(payload), 'utf8');
+    const opts = {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.path,
+        method: 'POST',
+        headers: Object.assign({
+            'Content-Type': 'application/json',
+            'Content-Length': body.length,
+            'User-Agent': 'maintctl-meshcentral',
+        }, headers || {}),
+        timeout: 20000,
+    };
+    const req = lib.request(opts, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+            const buf = Buffer.concat(chunks).toString('utf8');
+            cb(null, { ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body: buf });
+        });
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout 20s')); });
+    req.on('error', (e) => cb(e));
+    req.write(body);
+    req.end();
 }
 
 // Seuils d'alerte santé. Surchargables dans maintctl-config.json sous "health".
@@ -798,6 +989,92 @@ module.exports.maintctl = function (parent) {
                     sysinfoHardwareWindowsKeys: found.hardware && found.hardware.windows ? Object.keys(found.hardware.windows) : null,
                     sysinfo: found,
                 });
+            });
+            return;
+        }
+
+        if (action === 'glpiSync') {
+            const cfg = loadGlpiConfig();
+            if (!cfg) return sendJson(res, 400, { error: 'GLPI non configuré dans maintctl-config.json (clé "glpi.url" manquante)' });
+            let body = {};
+            try { body = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const nodes = Array.isArray(body.nodes) ? body.nodes.filter((n) => typeof n === 'string') : [];
+            if (!nodes.length) return sendJson(res, 400, { error: 'aucun nodeId fourni' });
+
+            const db = obj.meshServer && obj.meshServer.db;
+            if (!db || typeof db.GetAllType !== 'function') return sendJson(res, 500, { error: 'MC DB inaccessible' });
+            db.GetAllType('sysinfo', (sErr, sysDocs) => {
+                const sysById = {};
+                if (!sErr && Array.isArray(sysDocs)) {
+                    sysDocs.forEach((s) => {
+                        if (!s || !s._id) return;
+                        const nid = (typeof s._id === 'string' && s._id.indexOf('si') === 0) ? s._id.slice(2) : s._id;
+                        sysById[nid] = s;
+                    });
+                }
+                db.GetAllType('node', (nErr, nodeDocs) => {
+                    if (nErr) return sendJson(res, 500, { error: nErr.message });
+                    const nodeById = {};
+                    (nodeDocs || []).forEach((d) => { if (d && d._id) nodeById[d._id] = d; });
+                    const endpoint = cfg.url + '/front/inventory.php';
+                    const headers = {};
+                    if (cfg.token) headers['GLPI-Agent-Authorization'] = 'Bearer ' + cfg.token;
+                    const out = [];
+                    let i = 0;
+                    function nextNode() {
+                        if (i >= nodes.length) return sendJson(res, 200, { ok: true, results: out, endpoint: endpoint });
+                        const nid = nodes[i++];
+                        const node = nodeById[nid];
+                        if (!node) {
+                            out.push({ nodeId: nid, ok: false, error: 'node introuvable dans MC' });
+                            return nextNode();
+                        }
+                        const sys = sysById[nid];
+                        if (!sys) {
+                            out.push({ nodeId: nid, name: node.name, ok: false, error: 'sysinfo absent (MC ne l\'a pas encore collecté)' });
+                            return nextNode();
+                        }
+                        const payload = buildGlpiInventory({ id: nid, name: node.name }, sys);
+                        postJson(endpoint, payload, headers, (err, resp) => {
+                            if (err) {
+                                out.push({ nodeId: nid, name: node.name, ok: false, error: err.message });
+                            } else {
+                                out.push({
+                                    nodeId: nid, name: node.name, ok: !!resp.ok,
+                                    status: resp.status,
+                                    body: (resp.body || '').slice(0, 500),
+                                    deviceid: payload.deviceid,
+                                });
+                            }
+                            nextNode();
+                        });
+                    }
+                    nextNode();
+                });
+            });
+            return;
+        }
+
+        if (action === 'glpiTest') {
+            // Test simple : envoie un inventaire bidon pour vérifier la connectivité
+            const cfg = loadGlpiConfig();
+            if (!cfg) return sendJson(res, 400, { error: 'GLPI non configuré' });
+            const endpoint = cfg.url + '/front/inventory.php';
+            const headers = {};
+            if (cfg.token) headers['GLPI-Agent-Authorization'] = 'Bearer ' + cfg.token;
+            const payload = {
+                action: 'inventory',
+                deviceid: 'maintctl-test-' + Date.now(),
+                itemtype: 'Computer',
+                content: {
+                    versionclient: 'maintctl-meshcentral-test',
+                    hardware: { name: 'maintctl-test', uuid: '00000000-0000-0000-0000-000000000000' },
+                },
+            };
+            postJson(endpoint, payload, headers, (err, resp) => {
+                if (err) return sendJson(res, 500, { ok: false, error: err.message, endpoint: endpoint });
+                return sendJson(res, 200, { ok: !!resp.ok, status: resp.status, body: (resp.body || '').slice(0, 1000), endpoint: endpoint });
             });
             return;
         }
