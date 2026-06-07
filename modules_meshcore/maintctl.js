@@ -196,10 +196,12 @@ function buildDelprof2Args(days) {
     return args;
 }
 
-// Download via curl.exe (natif Win10 ≥ 1803). Bypass cert MC auto-signé
-// avec -k. PowerShell wc.DownloadFile partait en hang TLS infini sur
-// certaines configs Win10. curl est beaucoup plus fiable et a un vrai
-// --max-time qui kill proprement.
+// Download via PowerShell HttpWebRequest (.NET bas niveau).
+// - WebClient.DownloadFile : pas de Timeout exposé → hang infini possible.
+// - curl.exe Win10 19042 : version 7.55 buggée, -k ne bypass pas SEC_E_UNTRUSTED_ROOT
+//   (fix curl 7.61+, donc inutilisable ici).
+// HttpWebRequest expose Timeout + ReadWriteTimeout ET respecte le callback
+// ServerCertificateValidationCallback = { $true } qui ignore le cert MC.
 function downloadFile(url, dest, cb) {
     dbg('downloadFile start url=' + url + ' dest=' + dest);
     var fs = require('fs');
@@ -210,66 +212,31 @@ function downloadFile(url, dest, cb) {
         done = true;
         cb(err || null);
     }
-    var curlExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\curl.exe';
-    if (!fs.existsSync(curlExe)) {
-        dbg('downloadFile curl absent → fallback PS WebClient');
-        return downloadFilePS(url, dest, cb);
-    }
-    // Supprime fichier précédent s'il existe (sinon curl peut hésiter)
     try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (_) {}
-    var child;
-    try {
-        child = cp.execFile(curlExe, [
-            '-k',                   // ignore cert (auto-signé MC)
-            '-s', '-S',             // silent mais affiche les erreurs
-            '-L',                   // suit les redirects
-            '--max-time', '90',     // hard timeout 90s côté curl
-            '--connect-timeout', '15',
-            '-o', dest,
-            url
-        ]);
-    } catch (e) {
-        return finish(new Error('spawn curl: ' + e));
-    }
-    var log = '';
-    if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
-    if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
-    child.on('exit', function (code) {
-        dbg('downloadFile curl exited code=' + code + ' log=' + log.trim().slice(0, 200));
-        if (!fs.existsSync(dest)) return finish(new Error('curl: ' + (log.trim() || 'pas de fichier (code ' + code + ')')));
-        var st;
-        try { st = fs.statSync(dest); } catch (_) { return finish(new Error('stat dest failed')); }
-        if (!st.size) {
-            try { fs.unlinkSync(dest); } catch (_) {}
-            return finish(new Error('downloaded empty: ' + log.trim()));
-        }
-        dbg('downloadFile OK size=' + st.size);
-        finish(null);
-    });
-    // Watchdog côté Node : 120s (curl a déjà --max-time 90, c'est un filet)
-    setTimeout(function () {
-        if (done) return;
-        dbg('downloadFile TIMEOUT 120s');
-        try { child.kill(); } catch (_) {}
-        finish(new Error('download timeout (curl bloqué)'));
-    }, 120000);
-}
-
-// Fallback si curl absent (très vieilles versions Win 10 < 1803 ou Win 7).
-function downloadFilePS(url, dest, cb) {
-    var fs = require('fs');
-    var cp = require('child_process');
-    var done = false;
-    function finish(err) { if (done) return; done = true; cb(err || null); }
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
     var script = ''
+        + '$ErrorActionPreference = "Stop";'
         + 'try {'
-        + '  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;'
+        + '  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls;'
         + '  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true };'
-        + '  $wc = New-Object System.Net.WebClient;'
-        + '  $wc.DownloadFile(\'' + url.replace(/'/g, "''") + '\', \'' + dest.replace(/'/g, "''") + '\');'
+        + '  $req = [System.Net.HttpWebRequest]::Create(\'' + url.replace(/'/g, "''") + '\');'
+        + '  $req.Method = "GET";'
+        + '  $req.Timeout = 30000;'           // connect/headers 30s
+        + '  $req.ReadWriteTimeout = 60000;'  // stream 60s entre 2 reads
+        + '  $req.AllowAutoRedirect = $true;'
+        + '  $resp = $req.GetResponse();'
+        + '  $stream = $resp.GetResponseStream();'
+        + '  $fileStream = [System.IO.File]::Create(\'' + dest.replace(/'/g, "''") + '\');'
+        + '  $stream.CopyTo($fileStream);'
+        + '  $fileStream.Close();'
+        + '  $stream.Close();'
+        + '  $resp.Close();'
         + '  Write-Host "OK";'
-        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
+        + '} catch {'
+        + '  Write-Host ("ERR: " + $_.Exception.Message);'
+        + '  if ($_.Exception.InnerException) { Write-Host ("INNER: " + $_.Exception.InnerException.Message) }'
+        + '  exit 1;'
+        + '}';
     var ps1 = dest + '.dl.ps1';
     try { fs.writeFileSync(ps1, script); }
     catch (e) { return finish(new Error('write ps1: ' + e)); }
@@ -278,19 +245,32 @@ function downloadFilePS(url, dest, cb) {
         child = cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', ps1]);
     } catch (e) {
         try { fs.unlinkSync(ps1); } catch (_) {}
-        return finish(new Error('spawn ps: ' + e));
+        return finish(new Error('spawn ps download: ' + e));
     }
     var log = '';
     if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
     if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
-    child.on('exit', function () {
+    child.on('exit', function (code) {
+        dbg('downloadFile PS exited code=' + code + ' log=' + log.trim().slice(0, 300));
         try { fs.unlinkSync(ps1); } catch (_) {}
-        if (!fs.existsSync(dest)) return finish(new Error('PS download: ' + log.trim()));
-        var st = fs.statSync(dest);
-        if (!st.size) { try { fs.unlinkSync(dest); } catch (_) {} return finish(new Error('empty')); }
+        if (!fs.existsSync(dest)) return finish(new Error('PS download: ' + (log.trim() || 'pas de fichier (code ' + code + ')')));
+        var st;
+        try { st = fs.statSync(dest); } catch (_) { return finish(new Error('stat dest failed')); }
+        if (!st.size) {
+            try { fs.unlinkSync(dest); } catch (_) {}
+            return finish(new Error('PS downloaded empty: ' + log.trim()));
+        }
+        dbg('downloadFile OK size=' + st.size);
         finish(null);
     });
-    setTimeout(function () { if (done) return; try { child.kill(); } catch (_) {} finish(new Error('PS timeout')); }, 90000);
+    // Watchdog Node 150s (filet : PS a déjà Timeout=30s + ReadWriteTimeout=60s)
+    setTimeout(function () {
+        if (done) return;
+        dbg('downloadFile TIMEOUT 150s — kill PS');
+        try { child.kill(); } catch (_) {}
+        try { fs.unlinkSync(ps1); } catch (_) {}
+        finish(new Error('download timeout 150s'));
+    }, 150000);
 }
 
 // Exécute DelProf2.exe via un wrapper PowerShell qui utilise
