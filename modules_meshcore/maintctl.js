@@ -425,10 +425,6 @@ function buildPsProfileClean(days, excludeList) {
     }).join(',');
     return ''
         + '$ErrorActionPreference = "SilentlyContinue";'
-        // Défensif : annule tout reboot programmé (shutdown /r /t N) qui
-        // pourrait fire pendant la tâche. Windows Update peut en programmer
-        // un automatiquement si pendingReboot est en attente.
-        + 'try { & "$env:SystemRoot\\System32\\shutdown.exe" /a } catch {}'
         + 'try {'
         + '  $cutoff = (Get-Date).AddDays(-' + (parseInt(days, 10) || 90) + ');'
         + '  $excl = @(' + exclLit + ');'
@@ -472,9 +468,6 @@ function buildPsProfileClean(days, excludeList) {
         + '  }'
         + '  $after = (Get-PSDrive C).Free;'
         + '  $freed = [int64]($after - $before); if ($freed -lt 0) { $freed = 0 }'
-        // 2e tentative d'annulation en fin de tâche au cas où WU
-        // aurait reprogrammé un reboot après la suppression des profils.
-        + '  try { & "$env:SystemRoot\\System32\\shutdown.exe" /a } catch {}'
         + '  Write-Host ("MAINTCTL_DELETED:" + $deleted);'
         + '  Write-Host ("MAINTCTL_ERRORS:" + $errors);'
         + '  Write-Host ("MAINTCTL_FREED:" + $freed);'
