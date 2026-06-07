@@ -284,22 +284,18 @@ function runDelprof2(exePath, days, timeoutMs, onDone) {
     var cp = require('child_process');
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 
-    // Construit la liste d'args PS sous forme @('/q','/i','/d:90','/ed:X',…)
-    // Note : /q = quiet, /i = ignore errors, /d:N = profils inactifs >N jours,
-    // /ed:nom = exclure de la suppression (préserver).
-    var args = ['/q', '/i', '/d:' + (parseInt(days, 10) || 90)];
+    // Args DelProf2 : /u = unattended (pas de prompts), /i = ignore errors,
+    // /d:N = profils inactifs >N jours, /ed:nom = exclure (préserver).
+    // PAS /q : on veut l'output pour debug. /q = quiet + unattended ; /u
+    // = unattended sans cacher l'output.
+    var args = ['/u', '/i', '/d:' + (parseInt(days, 10) || 90)];
     PROFILE_SKIP.forEach(function (n) { args.push('/ed:' + n); });
-    var psArgsLit = args.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
 
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
     var ps1 = tmpRoot + '\\maintctl_delprof_' + Date.now() + '.ps1';
     var outTxt = tmpRoot + '\\maintctl_delprof_out.txt';
     var errTxt = tmpRoot + '\\maintctl_delprof_err.txt';
-    // /q retiré : on veut voir POURQUOI DelProf2 saute des profils.
-    // Le user avait raison, son script fonctionne avec /q /i — mais sans
-    // /q on a un log utile (DelProf2 écrit ses raisons sur stdout).
-    var psArgsNoQ = args.filter(function (a) { return a !== '/q'; });
-    var psArgsLit2 = psArgsNoQ.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
+    var psArgsLit2 = args.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
     var script = ''
         + '$ErrorActionPreference = "Stop";'
         + 'try {'
