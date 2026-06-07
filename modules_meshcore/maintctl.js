@@ -293,17 +293,33 @@ function runDelprof2(exePath, days, timeoutMs, onDone) {
 
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
     var ps1 = tmpRoot + '\\maintctl_delprof_' + Date.now() + '.ps1';
+    var outTxt = tmpRoot + '\\maintctl_delprof_out.txt';
+    var errTxt = tmpRoot + '\\maintctl_delprof_err.txt';
+    // /q retiré : on veut voir POURQUOI DelProf2 saute des profils.
+    // Le user avait raison, son script fonctionne avec /q /i — mais sans
+    // /q on a un log utile (DelProf2 écrit ses raisons sur stdout).
+    var psArgsNoQ = args.filter(function (a) { return a !== '/q'; });
+    var psArgsLit2 = psArgsNoQ.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
     var script = ''
         + '$ErrorActionPreference = "Stop";'
         + 'try {'
         + '  $before = (Get-PSDrive C).Free;'
         + '  $p = Start-Process -FilePath \'' + exePath.replace(/'/g, "''") + '\''
-        + '    -ArgumentList @(' + psArgsLit + ')'
-        + '    -Wait -WindowStyle Hidden -PassThru;'
+        + '    -ArgumentList @(' + psArgsLit2 + ')'
+        + '    -Wait -WindowStyle Hidden -PassThru'
+        + '    -RedirectStandardOutput \'' + outTxt.replace(/'/g, "''") + '\''
+        + '    -RedirectStandardError \'' + errTxt.replace(/'/g, "''") + '\';'
         + '  $after = (Get-PSDrive C).Free;'
         + '  $freed = [int64]($after - $before); if ($freed -lt 0) { $freed = 0 }'
+        + '  $stdout = if (Test-Path \'' + outTxt.replace(/'/g, "''") + '\') { Get-Content \'' + outTxt.replace(/'/g, "''") + '\' -Raw } else { "" }'
+        + '  $stderr = if (Test-Path \'' + errTxt.replace(/'/g, "''") + '\') { Get-Content \'' + errTxt.replace(/'/g, "''") + '\' -Raw } else { "" }'
         + '  Write-Host ("MAINTCTL_EXIT:" + [int]$p.ExitCode);'
         + '  Write-Host ("MAINTCTL_FREED:" + $freed);'
+        + '  Write-Host "----- DelProf2 stdout -----";'
+        + '  if ($stdout) { Write-Host $stdout }'
+        + '  if ($stderr) { Write-Host "----- DelProf2 stderr -----"; Write-Host $stderr }'
+        + '  Remove-Item \'' + outTxt.replace(/'/g, "''") + '\' -ErrorAction SilentlyContinue;'
+        + '  Remove-Item \'' + errTxt.replace(/'/g, "''") + '\' -ErrorAction SilentlyContinue;'
         + '} catch {'
         + '  Write-Host ("MAINTCTL_ERR:" + $_.Exception.Message);'
         + '  exit 1;'
@@ -336,6 +352,7 @@ function runDelprof2(exePath, days, timeoutMs, onDone) {
         var ok = (exitCode === 0);
         var removed = (log.match(/Deleted profile:/gi) || []).length;
         dbg('runDelprof2 finish ok=' + ok + ' exitCode=' + exitCode + ' freed=' + freed + ' removed=' + removed + ' logLen=' + log.length);
+        dbg('runDelprof2 FULL LOG:\r\n' + log);
         onDone(ok, freed, removed, log);
     }
     child.on('exit', function () { dbg('runDelprof2 child exited'); finish(); });
