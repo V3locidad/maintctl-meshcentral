@@ -84,6 +84,32 @@ function consumeDownloadToken(t) {
     return e;
 }
 
+// Délai sans heartbeat au-delà duquel un install/clean encore "running"
+// est considéré comme abandonné (poste éteint, agent crashé…).
+// L'agent émet driverInstallProgress toutes les 4s pendant pnputil, et un
+// install d'un seul .inf dépasse rarement 60s, donc 10 min est très large.
+const STALE_RUN_MS = 10 * 60 * 1000;
+
+function markStaleRuns() {
+    const now = Date.now();
+    let changed = false;
+    Object.values(runs).forEach((r) => {
+        if (!r || !r.results) return;
+        Object.keys(r.results).forEach((nid) => {
+            const res2 = r.results[nid];
+            if (!res2 || res2.status !== 'running') return;
+            const last = res2.time || r.timestamp || 0;
+            if (now - last > STALE_RUN_MS) {
+                res2.status = 'aborted';
+                res2.error = 'poste injoignable (pas de heartbeat depuis '
+                    + Math.round((now - last) / 60000) + ' min — éteint ou agent perdu ?)';
+                changed = true;
+            }
+        });
+    });
+    return changed;
+}
+
 function historyPath(__dir) { return path.join(__dir, 'maintctl-history.json'); }
 
 function loadHistory(__dir) {
@@ -442,6 +468,7 @@ module.exports.maintctl = function (parent) {
             const nodeId = String((req.query && req.query.nodeId) || '');
             const kind = String((req.query && req.query.kind) || 'driver');
             if (!nodeId) return sendJson(res, 400, { error: 'nodeId requis' });
+            if (markStaleRuns()) saveHistory(__dir);
             const out = [];
             Object.values(runs).forEach((r) => {
                 if (!r || r.kind !== kind) return;
@@ -531,6 +558,7 @@ module.exports.maintctl = function (parent) {
             const id = String((req.query && req.query.runId) || '');
             const run = runs[id];
             if (!run) return sendJson(res, 404, { error: 'run inconnu' });
+            if (markStaleRuns()) saveHistory(__dir);
             return sendJson(res, 200, run);
         }
 

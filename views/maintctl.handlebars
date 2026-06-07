@@ -511,7 +511,7 @@ function pollRun() {
   getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(currentRunId)).then(function (run) {
     renderResults(run);
     var allDone = Object.values(run.results).every(function (r) {
-      return r.status === 'done' || r.status === 'error' || r.status === 'offline';
+      return r.status === 'done' || r.status === 'error' || r.status === 'offline' || r.status === 'aborted';
     });
     if (!allDone) {
       clearTimeout(pollTimer);
@@ -543,6 +543,7 @@ function renderResults(run) {
     if (r.status === 'running') statusCell = '<span class="resCell run">en cours</span>';
     else if (r.status === 'done') statusCell = '<span class="resCell ok">terminé</span>';
     else if (r.status === 'offline') statusCell = '<span class="resCell off">offline</span>';
+    else if (r.status === 'aborted') statusCell = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">abandonné</span>';
     else statusCell = '<span class="resCell ko">erreur</span>';
     rows += '<tr><td>' + escapeHtml(name) + '</td><td>' + statusCell + '</td>'
       + '<td>' + cell('temp') + '</td><td>' + cell('browser') + '</td>'
@@ -955,6 +956,7 @@ function showDrvHistory(nodeId) {
       else if (h.status === 'error') statusBadge = '<span class="resCell ko" title="' + escapeHtml(h.error || '') + '">erreur</span>';
       else if (h.status === 'offline') statusBadge = '<span class="resCell off">offline</span>';
       else if (h.status === 'running') statusBadge = '<span class="resCell run">en cours</span>';
+      else if (h.status === 'aborted') statusBadge = '<span class="resCell ko" title="' + escapeHtml(h.error || '') + '">abandonné</span>';
       else statusBadge = escapeHtml(h.status || '?');
       var inst = (typeof h.installed === 'number') ? String(h.installed) : '—';
       var err = (typeof h.errors === 'number' && h.errors > 0) ? ' (' + h.errors + ' err)' : '';
@@ -1175,7 +1177,7 @@ function pollDrvRun() {
   getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(drvRunId)).then(function (run) {
     renderDrvResults(run);
     var allDone = Object.values(run.results).every(function (r) {
-      return r.status === 'done' || r.status === 'error' || r.status === 'offline';
+      return r.status === 'done' || r.status === 'error' || r.status === 'offline' || r.status === 'aborted';
     });
     if (!allDone) {
       clearTimeout(drvPollTimer);
@@ -1199,6 +1201,7 @@ function renderDrvResults(run) {
     if (r.status === 'running') statusCell = '<span class="resCell run">en cours</span>';
     else if (r.status === 'done') statusCell = '<span class="resCell ok">terminé</span>';
     else if (r.status === 'offline') statusCell = '<span class="resCell off">offline</span>';
+    else if (r.status === 'aborted') statusCell = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">abandonné</span>';
     else statusCell = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">erreur</span>';
     var step = r.step || '';
     var installed = (typeof r.installed === 'number') ? String(r.installed) : '—';
@@ -1207,7 +1210,7 @@ function renderDrvResults(run) {
       : (r.status === 'done' ? '<span class="resCell ok">non</span>' : '—');
     rows += '<tr><td>' + escapeHtml(name) + '</td>'
       + '<td>' + statusCell + '</td>'
-      + '<td>' + escapeHtml(step) + (r.error && r.status === 'error' ? '<div style="color:#721c24; font-size:11px">' + escapeHtml(r.error) + '</div>' : '') + '</td>'
+      + '<td>' + escapeHtml(step) + (r.error && (r.status === 'error' || r.status === 'aborted') ? '<div style="color:#721c24; font-size:11px">' + escapeHtml(r.error) + '</div>' : '') + '</td>'
       + '<td>' + installed + '</td>'
       + '<td>' + reboot + '</td></tr>';
   });

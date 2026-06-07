@@ -638,6 +638,27 @@ function doDriverInstall(data) {
     var ts = Date.now() + '_' + Math.floor(Math.random() * 1e9);
     var extractDir = tmpRoot + '\\maintctl_drv_' + ts;
 
+    // Janitor : si un install précédent a planté (poste éteint, agent crashé),
+    // les dossiers maintctl_drv_* restent dans %TEMP%. On nettoie ceux > 2h
+    // avant de démarrer le nouveau, pour ne pas saturer le disque.
+    try {
+        var STALE_MS = 2 * 60 * 60 * 1000;
+        var entries = fs.readdirSync(tmpRoot);
+        entries.forEach(function (name) {
+            if (!/^maintctl_drv_/.test(name)) return;
+            var full = tmpRoot + '\\' + name;
+            try {
+                var st = fs.statSync(full);
+                if (!st.isDirectory()) return;
+                if ((Date.now() - st.mtimeMs) < STALE_MS) return;
+                require('child_process').execFile(
+                    (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\cmd.exe',
+                    ['/c', 'rmdir', '/S', '/Q', full]
+                );
+            } catch (_) {}
+        });
+    } catch (_) {}
+
     function runInstall(script, cleanupExtras) {
         // Polling du fichier de progression écrit par PowerShell.
         // Permet de remonter "install: 12/45 NomDriver.inf" en temps réel,
