@@ -443,22 +443,35 @@ function buildPsProfileClean(days, excludeList) {
         + '      if ($name -eq $e)   { $match = $true; break }'
         + '    }'
         + '    if ($match) { Write-Host ("SKIP excluded: " + $p.LocalPath); continue }'
-        // Vraie "dernière activité" du profil : LastWriteTime du NTUSER.DAT.
-        // Win32_UserProfile.LastUseTime est mis à jour à chaque boot pour
-        // tous les profils non chargés (bug Windows), donc inutilisable.
-        // NTUSER.DAT ne bouge que quand le user fait vraiment quelque chose.
-        + '    $hive = Join-Path $p.LocalPath "NTUSER.DAT";'
-        + '    $activity = $null;'
-        + '    if (Test-Path $hive) {'
-        + '      try { $activity = (Get-Item $hive -Force).LastWriteTime } catch {}'
+        // Vraie "dernière activité" : max des LastWriteTime du dossier
+        // profil + sous-dossiers utilisateur (Documents/Desktop/etc.).
+        // Tested : Win32_UserProfile.LastUseTime ET NTUSER.DAT sont touchés
+        // par Windows au boot (eleve.elib avait LastUse + NTUSER.DAT à
+        // 15:01:45 sur un poste sans logon depuis 2022). Les dossiers eux
+        // ne sont pas touchés au boot — c'est ce que montre l'Explorateur.
+        + '    $candidates = @($p.LocalPath, '
+        + '      (Join-Path $p.LocalPath "Documents"),'
+        + '      (Join-Path $p.LocalPath "Desktop"),'
+        + '      (Join-Path $p.LocalPath "Downloads"),'
+        + '      (Join-Path $p.LocalPath "Pictures"),'
+        + '      (Join-Path $p.LocalPath "AppData\\Roaming"));'
+        + '    $dates = @();'
+        + '    foreach ($c in $candidates) {'
+        + '      if (Test-Path $c) {'
+        + '        try { $dates += (Get-Item $c -Force).LastWriteTime } catch {}'
+        + '      }'
         + '    }'
-        + '    if (-not $activity) { $activity = $p.LastUseTime }'
+        + '    if ($dates.Count -gt 0) {'
+        + '      $activity = ($dates | Measure-Object -Maximum).Maximum;'
+        + '    } else {'
+        + '      $activity = $p.LastUseTime;'
+        + '    }'
         + '    if (-not $activity -or $activity -gt $cutoff) {'
-        + '      Write-Host ("SKIP recent: " + $p.LocalPath + " (NTUSER.DAT: " + $activity + ")");'
+        + '      Write-Host ("SKIP recent: " + $p.LocalPath + " (activity: " + $activity + ")");'
         + '      continue;'
         + '    }'
         + '    try {'
-        + '      Write-Host ("DELETE: " + $p.LocalPath + " (NTUSER.DAT: " + $activity + ")");'
+        + '      Write-Host ("DELETE: " + $p.LocalPath + " (activity: " + $activity + ")");'
         + '      Remove-CimInstance -InputObject $p -ErrorAction Stop;'
         + '      $deleted++;'
         + '    } catch {'
