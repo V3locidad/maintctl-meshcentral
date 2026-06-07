@@ -133,22 +133,38 @@ function pickFirst(obj, keys) {
 function deriveHealth(sys) {
     const out = { diskFreeGB: null, diskTotalGB: null, diskFreePct: null, lastBoot: null, uptimeDays: null };
     if (!sys) return out;
-    const disks = deepFindLogicalDisks(sys);
-    let c = null;
-    for (let i = 0; i < disks.length; i++) {
-        const d = disks[i];
-        const id = String(pickFirst(d, ['DeviceID','Caption','Name','DriveLetter']) || '').toUpperCase();
-        if (id.indexOf('C:') === 0 || id === 'C') { c = d; break; }
-    }
-    if (!c && disks.length) c = disks[0]; // fallback
-    if (c) {
-        const free = Number(pickFirst(c, ['FreeSpace','Free','AvailableBytes','CapacityRemaining']) || 0);
-        const total = Number(pickFirst(c, ['Size','Capacity','Total','TotalBytes']) || 0);
-        if (total > 0) {
-            out.diskFreeGB = +(free / 1073741824).toFixed(1);
-            out.diskTotalGB = +(total / 1073741824).toFixed(1);
-            out.diskFreePct = Math.round((free / total) * 100);
+    // --- Disque C: ---
+    // Path principal observé sur MC : hardware.windows.volumes = objet keyé
+    // par lettre, ex { "C": { type, size, sizeremaining }, "D": {...} }.
+    // Fallback : recherche récursive de tout objet ressemblant à un volume
+    // (avec DeviceID/Caption/Name + Size/FreeSpace).
+    let total = 0, free = 0;
+    const winVols = sys.hardware && sys.hardware.windows && sys.hardware.windows.volumes;
+    if (winVols && typeof winVols === 'object' && !Array.isArray(winVols)) {
+        const cKey = Object.keys(winVols).find((k) => k.toUpperCase() === 'C');
+        if (cKey) {
+            const v = winVols[cKey] || {};
+            total = Number(pickFirst(v, ['size','Size','total','Total','Capacity']) || 0);
+            free = Number(pickFirst(v, ['sizeremaining','SizeRemaining','freeSpace','FreeSpace','Free','AvailableBytes']) || 0);
         }
+    }
+    if (!total) {
+        const disks = deepFindLogicalDisks(sys);
+        let c = null;
+        for (let i = 0; i < disks.length; i++) {
+            const d = disks[i];
+            const id = String(pickFirst(d, ['DeviceID','Caption','Name','DriveLetter']) || '').toUpperCase();
+            if (id.indexOf('C:') === 0 || id === 'C') { c = d; break; }
+        }
+        if (c) {
+            free = Number(pickFirst(c, ['FreeSpace','Free','AvailableBytes','CapacityRemaining']) || 0);
+            total = Number(pickFirst(c, ['Size','Capacity','Total','TotalBytes']) || 0);
+        }
+    }
+    if (total > 0) {
+        out.diskFreeGB = +(free / 1073741824).toFixed(1);
+        out.diskTotalGB = +(total / 1073741824).toFixed(1);
+        out.diskFreePct = Math.round((free / total) * 100);
     }
     // --- LastBootUpTime / dernier boot ---
     let lb = deepFindKey(sys, 'lastbootuptime')

@@ -1461,7 +1461,10 @@ function renderHealth() {
           + (disk != null ? (disk + '/' + diskTot + ' Go') : '—') + '</span></div>'
         + (disk != null ? '<div class="diskBar"><div class="fill ' + fillCls + '" style="width:' + fillW + '%"></div></div>' : '')
         + '<div class="metric' + (upCls ? ' ' + upCls : '') + '"><span>Uptime</span><span class="v">'
-          + (uptime != null ? (Math.round(uptime) + ' j') : '—') + '</span></div>'
+          + (uptime != null
+              ? (uptime >= 1 ? (Math.round(uptime) + ' j')
+                 : (Math.max(0, Math.round(uptime * 24)) + ' h'))
+              : '—') + '</span></div>'
         + '<div class="metric"><span>Dernier boot</span><span class="v" style="font-size:11px">' + fmtBoot(p.health.lastBoot) + '</span></div>'
         + '</div>';
     });
