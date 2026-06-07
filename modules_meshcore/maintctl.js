@@ -54,6 +54,9 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'driverInstall':
                 doDriverInstall(args);
                 return 'driverInstall started';
+            case 'eventList':
+                doEventList(args);
+                return 'eventList started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -752,6 +755,75 @@ function doDriverInstall(data) {
         }
         reply({ pluginaction: 'driverInstallProgress', dispatchId: data.dispatchId, step: 'extract + install (peut prendre 5-15 min sur gros pack)' });
         runInstall(buildPsDriverInstall(zipPath, extractDir), [zipPath]);
+    });
+}
+
+// Récupère les events Windows System+Application (Critical + Error) sur
+// les derniers N jours, max ~500 events. Pour dépannage rapide : BSOD,
+// erreurs disque, drivers en échec, services qui plantent.
+function buildPsEventList(outPath, days, maxEvents) {
+    var outE = outPath.replace(/'/g, "''");
+    return ''
+        + '$ErrorActionPreference = "SilentlyContinue";'
+        + 'try {'
+        + '  $start = (Get-Date).AddDays(-' + days + ');'
+        + '  $evts = Get-WinEvent -FilterHashtable @{'
+        + '    LogName = @("System","Application");'
+        + '    Level = @(1,2,3);'  // Critical, Error, Warning (filtré côté serveur)
+        + '    StartTime = $start;'
+        + '  } -MaxEvents ' + maxEvents + ' -ErrorAction SilentlyContinue;'
+        + '  $out = $evts | ForEach-Object {'
+        + '    $msg = if ($_.Message) { ($_.Message -replace "\\s+"," ").Trim() } else { "" };'
+        + '    if ($msg.Length -gt 400) { $msg = $msg.Substring(0,400) + "..." }'
+        + '    [PSCustomObject]@{'
+        + '      t = $_.TimeCreated.ToUniversalTime().ToString("o");'
+        + '      l = [string]$_.LogName;'
+        + '      lv = [int]$_.Level;'
+        + '      src = [string]$_.ProviderName;'
+        + '      id = [int]$_.Id;'
+        + '      m = $msg;'
+        + '    }'
+        + '  };'
+        + '  $json = $out | ConvertTo-Json -Compress;'
+        + '  if ($null -eq $json) { $json = "[]" }'
+        + '  $utf8NoBom = New-Object System.Text.UTF8Encoding($false);'
+        + '  [System.IO.File]::WriteAllText(\'' + outE + '\', $json, $utf8NoBom);'
+        + '  Write-Host "OK";'
+        + '} catch { Write-Host ("ERR: " + $_.Exception.Message); exit 1 }';
+}
+
+function doEventList(data) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'eventListResult', dispatchId: data.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var fs = require('fs');
+    var days = Math.max(1, Math.min(30, parseInt(data.days, 10) || 7));
+    var maxEvents = Math.max(50, Math.min(2000, parseInt(data.maxEvents, 10) || 500));
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var outPath = tmpRoot + '\\maintctl_evt_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.json';
+    var script = buildPsEventList(outPath, days, maxEvents);
+    runPowerShell(script, 120 * 1000, function (ok, _bytes, log) {
+        var raw = '';
+        var err = '';
+        try {
+            if (fs.existsSync(outPath)) {
+                raw = fs.readFileSync(outPath).toString();
+                try { fs.unlinkSync(outPath); } catch (_) {}
+            } else {
+                err = 'fichier JSON pas généré (PS log: ' + (log || '').slice(-300).trim() + ')';
+            }
+        } catch (e) {
+            err = 'lecture JSON: ' + e;
+        }
+        reply({
+            pluginaction: 'eventListResult',
+            dispatchId: data.dispatchId,
+            ok: ok && !err,
+            error: err || undefined,
+            eventsJson: raw,
+            logTail: (!ok || err) ? (log || '').slice(-1000) : ''
+        });
     });
 }
 

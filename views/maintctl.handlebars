@@ -136,6 +136,30 @@
   .diskBar .fill { height: 100%; background: #5cb85c; }
   .diskBar .fill.warn { background: #f0ad4e; }
   .diskBar .fill.crit { background: #d9534f; }
+  /* --- Événements --- */
+  .evtTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .evtTable th, .evtTable td { padding: 5px 8px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+  .evtTable th { background: #f4f4f4; position: sticky; top: 0; }
+  .evtTable td.lvl { width: 70px; }
+  .evtTable td.cat { width: 130px; }
+  .evtTable td.time { width: 140px; white-space: nowrap; font-family: Menlo, Consolas, monospace; font-size: 11px; color: #555; }
+  .evtTable td.src { width: 200px; font-family: Menlo, Consolas, monospace; font-size: 11px; color: #555; word-break: break-word; }
+  .evtTable td.idCell { width: 70px; font-family: Menlo, Consolas, monospace; font-size: 11px; }
+  .evtTable td.msg { font-size: 12px; }
+  .evtTable tr.critical { background: #fdf5f5; }
+  .evtTable tr.error { background: #fdfbf5; }
+  .evtTable tr.warning { background: #fafafa; }
+  .lvlBadge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .lvlBadge.critical { background: #d9534f; color: #fff; }
+  .lvlBadge.error    { background: #f0ad4e; color: #fff; }
+  .lvlBadge.warning  { background: #e2c200; color: #5c4d00; }
+  .catBadge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; background: #e2e3e5; color: #383d41; }
+  .catBadge.bsod { background: #d9534f; color: #fff; }
+  .catBadge.disk { background: #d58512; color: #fff; }
+  .catBadge.driver { background: #6c757d; color: #fff; }
+  .catBadge.service { background: #5bc0de; color: #fff; }
+  .catBadge.network { background: #2c7be5; color: #fff; }
+  .catBadge.security { background: #5cb85c; color: #fff; }
 </style>
 </head>
 <body>
@@ -146,6 +170,7 @@
   <div class="tab active" data-tab="clean">Nettoyage</div>
   <div class="tab" data-tab="devices">Périphériques</div>
   <div class="tab" data-tab="drivers">Drivers</div>
+  <div class="tab" data-tab="events">Événements</div>
   <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
 </div>
 
@@ -269,6 +294,34 @@
       <tbody id="drvResultsBody"></tbody>
     </table>
   </div>
+</div>
+
+<!-- ============ TAB ÉVÉNEMENTS ============ -->
+<div id="panel-events" class="panel">
+  <div class="bar">
+    <select id="evtNodeSel" style="min-width:240px"><option value="">— sélectionner un poste —</option></select>
+    <label style="font-size:12px; color:#666">
+      Derniers
+      <input id="evtDays" type="number" value="7" min="1" max="30" style="width:50px"> jour(s)
+    </label>
+    <button id="evtLoadBtn" class="primary" disabled>Charger</button>
+    <button id="evtRefreshBtn" disabled>Rafraîchir (force)</button>
+    <span style="flex:1"></span>
+    <span id="evtMeta" style="font-size:11px; color:#888"></span>
+  </div>
+
+  <div id="evtSummary" class="healthBar" style="display:none"></div>
+
+  <div class="bar" id="evtFilterBar" style="display:none">
+    <label style="font-size:12px; color:#666"><input type="checkbox" id="evtFiltCrit" checked> Critique</label>
+    <label style="font-size:12px; color:#666"><input type="checkbox" id="evtFiltErr" checked> Erreur</label>
+    <label style="font-size:12px; color:#666"><input type="checkbox" id="evtFiltWarn"> Warning</label>
+    <span style="color:#ccc">|</span>
+    <select id="evtFiltCat" style="font-size:12px"><option value="">Toutes catégories</option></select>
+    <input id="evtFiltText" type="text" placeholder="filtrer message / source…" style="flex:1; min-width:200px; padding:3px 6px; border:1px solid #bbb; border-radius:3px">
+  </div>
+
+  <div id="evtList"><div class="empty">Sélectionne un poste puis clique sur Charger.</div></div>
 </div>
 
 <!-- ============ TAB SANTÉ ============ -->
@@ -492,6 +545,7 @@ function refreshAgents() {
     agents = data.agents || [];
     renderAgents();
     populateDevNodeSelect();
+    populateEvtNodeSelect();
   }).catch(function (e) {
     document.getElementById('agentsBody').innerHTML = '<div class="empty">Erreur: ' + e.message + '</div>';
   });
@@ -1488,6 +1542,155 @@ function startHealthPolling() {
   healthTimer = setInterval(refreshHealth, HEALTH_POLL_MS);
 }
 startHealthPolling();
+
+// ============================ ÉVÉNEMENTS ============================
+var evtData = null;
+
+function populateEvtNodeSelect() {
+  var sel = document.getElementById('evtNodeSel');
+  if (!sel) return;
+  var prev = sel.value;
+  var opts = '<option value="">— sélectionner un poste —</option>';
+  agents.filter(function (a) {
+    return a.online && (!a.family || a.family === 'Windows');
+  }).forEach(function (a) {
+    opts += '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + ' (' + escapeHtml(a.mesh || '?') + ')</option>';
+  });
+  sel.innerHTML = opts;
+  if (prev) sel.value = prev;
+  syncEvtButtons();
+}
+
+function syncEvtButtons() {
+  var hasNode = !!document.getElementById('evtNodeSel').value;
+  document.getElementById('evtLoadBtn').disabled = !hasNode;
+  document.getElementById('evtRefreshBtn').disabled = !hasNode;
+}
+
+function loadEvents(force) {
+  var nodeId = document.getElementById('evtNodeSel').value;
+  if (!nodeId) return;
+  var days = parseInt(document.getElementById('evtDays').value, 10) || 7;
+  document.getElementById('evtList').innerHTML = '<div class="empty">Lecture des journaux Windows (jusqu\'à 3 min)…</div>';
+  document.getElementById('evtSummary').style.display = 'none';
+  document.getElementById('evtFilterBar').style.display = 'none';
+  document.getElementById('evtMeta').textContent = '';
+  var url = BASE + '&action=eventList&nodeId=' + encodeURIComponent(nodeId) + '&days=' + days + (force ? '&force=1' : '');
+  getJson(url).then(function (r) {
+    if (r.error) {
+      document.getElementById('evtList').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(r.error) + '</div>';
+      return;
+    }
+    evtData = r;
+    renderEventsSummary();
+    populateEvtCatFilter();
+    renderEvents();
+  }).catch(function (e) {
+    document.getElementById('evtList').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(e.message) + '</div>';
+  });
+}
+
+function renderEventsSummary() {
+  if (!evtData) return;
+  var s = evtData.summary || { total: 0, critical: 0, error: 0, warning: 0, byCategory: [] };
+  var meta = document.getElementById('evtMeta');
+  var when = evtData.lastCheck ? new Date(evtData.lastCheck).toLocaleString('fr-FR') : '';
+  meta.textContent = (evtData.cached ? 'cache du ' : 'lu le ') + when;
+
+  var box = document.getElementById('evtSummary');
+  var parts = '<span class="stat"><b>' + s.total + '</b>événements</span>'
+    + '<span class="stat crit"><b>' + s.critical + '</b>critiques</span>'
+    + '<span class="stat"><b style="color:#d58512">' + s.error + '</b>erreurs</span>'
+    + '<span class="stat"><b style="color:#5c4d00">' + s.warning + '</b>warnings</span>';
+  if (s.byCategory && s.byCategory.length) {
+    parts += '<span style="flex:1"></span>';
+    s.byCategory.slice(0, 6).forEach(function (c) {
+      if (c.critical + c.error === 0 && c.warning === 0) return;
+      parts += '<span class="catBadge ' + c.cat + '" style="margin-right:4px">' + escapeHtml(c.label) + ' · ' + c.count + '</span>';
+    });
+  }
+  box.innerHTML = parts;
+  box.style.display = '';
+  document.getElementById('evtFilterBar').style.display = '';
+}
+
+function populateEvtCatFilter() {
+  if (!evtData) return;
+  var sel = document.getElementById('evtFiltCat');
+  var prev = sel.value;
+  var opts = '<option value="">Toutes catégories</option>';
+  (evtData.summary.byCategory || []).forEach(function (c) {
+    opts += '<option value="' + c.cat + '">' + escapeHtml(c.label) + ' (' + c.count + ')</option>';
+  });
+  sel.innerHTML = opts;
+  if (prev) sel.value = prev;
+}
+
+function fmtEvtTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth()+1)).slice(-2) + ' '
+       + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+}
+
+function renderEvents() {
+  if (!evtData) return;
+  var showCrit = document.getElementById('evtFiltCrit').checked;
+  var showErr = document.getElementById('evtFiltErr').checked;
+  var showWarn = document.getElementById('evtFiltWarn').checked;
+  var filtCat = document.getElementById('evtFiltCat').value;
+  var filtText = document.getElementById('evtFiltText').value.toLowerCase().trim();
+
+  var rows = (evtData.events || []).filter(function (e) {
+    if (e.lv === 1 && !showCrit) return false;
+    if (e.lv === 2 && !showErr) return false;
+    if (e.lv === 3 && !showWarn) return false;
+    if (filtCat && e.cat !== filtCat) return false;
+    if (filtText) {
+      var blob = ((e.m || '') + ' ' + (e.src || '') + ' ' + (e.id || '')).toLowerCase();
+      if (blob.indexOf(filtText) < 0) return false;
+    }
+    return true;
+  });
+  // Tri par date desc
+  rows.sort(function (a, b) { return (b.t || '').localeCompare(a.t || ''); });
+
+  if (!rows.length) {
+    document.getElementById('evtList').innerHTML = '<div class="empty">Aucun événement avec ces filtres.</div>';
+    return;
+  }
+  var html = '<table class="evtTable"><thead><tr>'
+    + '<th>Niveau</th><th>Catégorie</th><th>Quand</th><th>Source</th><th>ID</th><th>Message</th>'
+    + '</tr></thead><tbody>';
+  var lvlText = { 1: 'Critique', 2: 'Erreur', 3: 'Warning' };
+  var lvlCls = { 1: 'critical', 2: 'error', 3: 'warning' };
+  rows.slice(0, 500).forEach(function (e) {
+    var cls = lvlCls[e.lv] || '';
+    html += '<tr class="' + cls + '">'
+      + '<td class="lvl"><span class="lvlBadge ' + cls + '">' + (lvlText[e.lv] || e.lv) + '</span></td>'
+      + '<td class="cat"><span class="catBadge ' + (e.cat || 'other') + '">' + escapeHtml(e.catLabel || e.cat || '') + '</span></td>'
+      + '<td class="time">' + escapeHtml(fmtEvtTime(e.t)) + '</td>'
+      + '<td class="src">' + escapeHtml(e.src || '') + ' <span style="color:#999">[' + escapeHtml(e.l || '') + ']</span></td>'
+      + '<td class="idCell">' + (e.id || '') + '</td>'
+      + '<td class="msg">' + escapeHtml(e.m || '') + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  if (rows.length > 500) {
+    html += '<div class="empty">' + (rows.length - 500) + ' événements supplémentaires non affichés (raffine les filtres).</div>';
+  }
+  document.getElementById('evtList').innerHTML = html;
+}
+
+document.getElementById('evtNodeSel').addEventListener('change', syncEvtButtons);
+document.getElementById('evtLoadBtn').addEventListener('click', function () { loadEvents(false); });
+document.getElementById('evtRefreshBtn').addEventListener('click', function () { loadEvents(true); });
+document.getElementById('evtFiltCrit').addEventListener('change', renderEvents);
+document.getElementById('evtFiltErr').addEventListener('change', renderEvents);
+document.getElementById('evtFiltWarn').addEventListener('change', renderEvents);
+document.getElementById('evtFiltCat').addEventListener('change', renderEvents);
+document.getElementById('evtFiltText').addEventListener('input', renderEvents);
 
 document.getElementById('devLoadBtn').addEventListener('click', function () { loadDevices(false); });
 document.getElementById('devRefreshBtn').addEventListener('click', function () { loadDevices(true); });

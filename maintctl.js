@@ -15,6 +15,7 @@ const HISTORY_MAX = 200;
 const RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
+const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
 const downloadTokens = {};         // token -> { kind, payload, expires }
@@ -33,6 +34,8 @@ function loadDriversDir() {
 const serverState = { baseUrl: '' };
 const runs = {};                   // runId -> run cleanup
 const devCache = {};               // nodeId -> { devices, lastCheck }
+const evtCache = {};               // nodeId -> { events, summary, lastCheck }
+const evtWaiters = {};             // dispatchId -> { res, expires }
 const devPendingWaiters = {};      // dispatchId -> { res, expires }
 const devDetailsWaiters = {};      // dispatchId -> { res, expires }
 const devActionWaiters = {};       // dispatchId -> { res, expires }
@@ -226,6 +229,73 @@ function evalAlerts(health, online, cfg) {
     return alerts;
 }
 
+// Catégorise un event Windows pour l'affichage condensé. Renvoie aussi
+// un niveau d'importance (critical/error/warning) basé sur le Level et
+// la nature de l'événement.
+function categorizeEvent(e) {
+    const src = (e.src || '').toLowerCase();
+    const id = e.id;
+    const log = (e.l || '').toLowerCase();
+    const lvl = e.lv; // 1=Critical, 2=Error, 3=Warning
+    // BSOD : Kernel-Power id 41 (unexpected shutdown) ou WER 1001
+    if (id === 41 && src.indexOf('kernel-power') >= 0) return { cat: 'bsod', label: 'BSOD / arrêt brutal' };
+    if (id === 1001 && src.indexOf('wer') >= 0) return { cat: 'bsod', label: 'BSOD / rapport erreur' };
+    if (src.indexOf('bugcheck') >= 0) return { cat: 'bsod', label: 'BSOD' };
+    // Disque / stockage / fichier système
+    if (src === 'disk' || src.indexOf('ntfs') >= 0 || src.indexOf('volsnap') >= 0
+        || src.indexOf('volmgr') >= 0 || src.indexOf('storahci') >= 0
+        || src.indexOf('storport') >= 0 || src.indexOf('iastor') >= 0) {
+        return { cat: 'disk', label: 'Disque / stockage' };
+    }
+    // Drivers / PnP / matériel
+    if (src.indexOf('pnp') >= 0 || src.indexOf('driverframeworks') >= 0
+        || src.indexOf('kernel-pnp') >= 0 || src.indexOf('whea-logger') >= 0
+        || src === 'display' || src.indexOf('nvlddmkm') >= 0) {
+        return { cat: 'driver', label: 'Driver / matériel' };
+    }
+    // Services Windows
+    if (src.indexOf('service control manager') >= 0) {
+        return { cat: 'service', label: 'Services Windows' };
+    }
+    // Réseau
+    if (src.indexOf('dhcp') >= 0 || src.indexOf('dns') >= 0 || src.indexOf('netbt') >= 0
+        || src.indexOf('netlogon') >= 0 || src.indexOf('tcpip') >= 0) {
+        return { cat: 'network', label: 'Réseau' };
+    }
+    // Sécurité (Defender, auth)
+    if (src.indexOf('defender') >= 0 || src.indexOf('security') >= 0
+        || src.indexOf('lsa') >= 0 || src.indexOf('authentication') >= 0) {
+        return { cat: 'security', label: 'Sécurité' };
+    }
+    // Applications (Application log)
+    if (log === 'application') {
+        return { cat: 'app', label: 'Application' };
+    }
+    return { cat: 'other', label: 'Autre' };
+}
+
+function summarizeEvents(events) {
+    const cats = {};
+    let crit = 0, err = 0, warn = 0;
+    events.forEach((e) => {
+        const c = categorizeEvent(e);
+        e.cat = c.cat;
+        e.catLabel = c.label;
+        if (!cats[c.cat]) cats[c.cat] = { cat: c.cat, label: c.label, count: 0, critical: 0, error: 0, warning: 0 };
+        cats[c.cat].count++;
+        if (e.lv === 1) { cats[c.cat].critical++; crit++; }
+        else if (e.lv === 2) { cats[c.cat].error++; err++; }
+        else if (e.lv === 3) { cats[c.cat].warning++; warn++; }
+    });
+    return {
+        total: events.length,
+        critical: crit,
+        error: err,
+        warning: warn,
+        byCategory: Object.values(cats).sort((a, b) => (b.critical + b.error) - (a.critical + a.error)),
+    };
+}
+
 function newDownloadToken(kind, payload) {
     const t = crypto.randomBytes(24).toString('hex');
     downloadTokens[t] = { kind: kind, payload: payload || null, expires: Date.now() + DOWNLOAD_TTL_MS };
@@ -387,6 +457,42 @@ module.exports.maintctl = function (parent) {
                         log: command.logTail || ''
                     }));
                 } catch (e) {}
+                return;
+            }
+            if (command.pluginaction === 'eventListResult') {
+                const did = command.dispatchId;
+                if (!did) return;
+                const entry = pendingDispatches[did];
+                if (!entry || entry.kind !== 'eventList') return;
+                delete pendingDispatches[did];
+                const nid = entry.nodeId;
+                let events = [];
+                let err = command.error || '';
+                if (!err && command.eventsJson) {
+                    try {
+                        let raw = command.eventsJson;
+                        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+                        const parsed = JSON.parse(raw);
+                        events = Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+                    } catch (e) {
+                        err = 'parse JSON: ' + e.message;
+                    }
+                }
+                const summary = summarizeEvents(events);
+                evtCache[nid] = { ok: !err, error: err, events: events, summary: summary, lastCheck: Date.now() };
+                const w = evtWaiters[did];
+                if (w) {
+                    delete evtWaiters[did];
+                    try {
+                        w.res.setHeader('Content-Type', 'application/json');
+                        w.res.end(JSON.stringify({
+                            ok: !err, error: err || undefined,
+                            events: events, summary: summary,
+                            lastCheck: evtCache[nid].lastCheck,
+                            logTail: command.logTail || ''
+                        }));
+                    } catch (_) {}
+                }
                 return;
             }
             if (command.pluginaction === 'devListResult') {
@@ -1085,6 +1191,49 @@ module.exports.maintctl = function (parent) {
                     w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (150s) — agent peut-être sur ancienne version (restart MeshAgent service ?), ou Get-PnpDevice trop lent' }));
                 } catch (_) {}
             }, 150 * 1000);
+            return;
+        }
+
+        if (action === 'eventList') {
+            // ?nodeId=...&days=7&force=1
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            const days = Math.max(1, Math.min(30, parseInt((req.query && req.query.days) || '7', 10) || 7));
+            const force = String((req.query && req.query.force) || '') === '1';
+            if (!nodeId) return sendJson(res, 400, { error: 'nodeId requis' });
+            const cached = evtCache[nodeId];
+            if (!force && cached && (Date.now() - cached.lastCheck) < EVT_TTL_MS) {
+                return sendJson(res, 200, {
+                    ok: cached.ok, error: cached.error || undefined,
+                    events: cached.events, summary: cached.summary,
+                    cached: true, lastCheck: cached.lastCheck
+                });
+            }
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const ws = wsagents[nodeId];
+            if (!ws || typeof ws.send !== 'function') return sendJson(res, 503, { error: 'agent offline' });
+            const did = 'evt-' + crypto.randomBytes(8).toString('hex');
+            pendingDispatches[did] = { kind: 'eventList', nodeId: nodeId, expires: Date.now() + 3 * 60 * 1000 };
+            evtWaiters[did] = { res: res, expires: Date.now() + 3 * 60 * 1000 };
+            try {
+                ws.send(JSON.stringify({
+                    action: 'plugin', plugin: 'maintctl', pluginaction: 'eventList',
+                    dispatchId: did, days: days
+                }));
+            } catch (e) {
+                delete pendingDispatches[did];
+                delete evtWaiters[did];
+                return sendJson(res, 500, { error: 'dispatch failed: ' + e.message });
+            }
+            setTimeout(() => {
+                const w = evtWaiters[did];
+                if (!w) return;
+                delete evtWaiters[did];
+                delete pendingDispatches[did];
+                try {
+                    w.res.setHeader('Content-Type', 'application/json');
+                    w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (180s) — agent peut-être sur ancienne version (restart MeshAgent ?)' }));
+                } catch (_) {}
+            }, 180 * 1000);
             return;
         }
 
