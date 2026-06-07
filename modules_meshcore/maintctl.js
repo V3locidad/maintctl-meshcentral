@@ -414,25 +414,76 @@ function runPowerShell(script, timeoutMs, onDone) {
     }, timeoutMs);
 }
 
-function doProfilesTask(data, profileDays, cb) {
-    dbg('doProfilesTask start days=' + profileDays + ' url=' + (data.delprof2Url || '(empty)'));
-    var fs = require('fs');
-    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
-    dbg('doProfilesTask tmpRoot=' + tmpRoot);
-    var exePath = tmpRoot + '\\maintctl_DelProf2.exe';
-    var url = data.delprof2Url || '';
-    if (!url) { dbg('doProfilesTask ABORT no url'); return cb(false, 0, 0, 'delprof2Url manquant'); }
+// Nettoyage natif PowerShell via Win32_UserProfile (LastUseTime fiable),
+// sans dépendance à DelProf2. DelProf2 utilisait un timestamp interne
+// foireux (LocalProfileUnloadTime du registre) qui se met à jour à chaque
+// chargement de hive même sans logon, → faisait apparaître les profils
+// comme "récents" alors que LastUseTime disait 2022.
+function buildPsProfileClean(days, excludeList) {
+    var exclLit = excludeList.map(function (n) {
+        return "'" + n.replace(/'/g, "''") + "'";
+    }).join(',');
+    return ''
+        + '$ErrorActionPreference = "SilentlyContinue";'
+        + 'try {'
+        + '  $cutoff = (Get-Date).AddDays(-' + (parseInt(days, 10) || 90) + ');'
+        + '  $excl = @(' + exclLit + ');'
+        + '  $before = (Get-PSDrive C).Free;'
+        + '  $deleted = 0; $errors = 0;'
+        + '  $profiles = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop;'
+        + '  foreach ($p in $profiles) {'
+        + '    if ($p.Special) { continue }'
+        + '    if ($p.Loaded)  { Write-Host ("SKIP loaded: " + $p.LocalPath); continue }'
+        + '    if (-not $p.LocalPath) { continue }'
+        + '    $name = Split-Path -Leaf $p.LocalPath;'
+        + '    $match = $false;'
+        + '    foreach ($e in $excl) {'
+        + '      if ($e -like $name) { $match = $true; break }'  // wildcard ex "Default*"
+        + '      if ($name -eq $e)   { $match = $true; break }'
+        + '    }'
+        + '    if ($match) { Write-Host ("SKIP excluded: " + $p.LocalPath); continue }'
+        + '    if (-not $p.LastUseTime -or $p.LastUseTime -gt $cutoff) {'
+        + '      Write-Host ("SKIP recent: " + $p.LocalPath + " (LastUse: " + $p.LastUseTime + ")");'
+        + '      continue;'
+        + '    }'
+        + '    try {'
+        + '      Write-Host ("DELETE: " + $p.LocalPath + " (LastUse: " + $p.LastUseTime + ")");'
+        + '      Remove-CimInstance -InputObject $p -ErrorAction Stop;'
+        + '      $deleted++;'
+        + '    } catch {'
+        + '      Write-Host ("ERR delete " + $p.LocalPath + ": " + $_.Exception.Message);'
+        + '      $errors++;'
+        + '    }'
+        + '  }'
+        + '  $after = (Get-PSDrive C).Free;'
+        + '  $freed = [int64]($after - $before); if ($freed -lt 0) { $freed = 0 }'
+        + '  Write-Host ("MAINTCTL_DELETED:" + $deleted);'
+        + '  Write-Host ("MAINTCTL_ERRORS:" + $errors);'
+        + '  Write-Host ("MAINTCTL_FREED:" + $freed);'
+        + '  Write-Host ("MAINTCTL_EXIT:0");'
+        + '} catch {'
+        + '  Write-Host ("MAINTCTL_ERR:" + $_.Exception.Message);'
+        + '  Write-Host ("MAINTCTL_EXIT:1");'
+        + '  exit 1;'
+        + '}';
+}
 
-    try { if (fs.existsSync(exePath)) fs.unlinkSync(exePath); } catch (_) {}
-    dbg('doProfilesTask downloading from ' + url);
-    downloadFile(url, exePath, function (err) {
-        if (err) { dbg('doProfilesTask DL err: ' + err.message); return cb(false, 0, 0, 'download DelProf2 échoué: ' + err.message); }
-        if (!fs.existsSync(exePath)) { dbg('doProfilesTask DL ok mais exe absent'); return cb(false, 0, 0, 'DelProf2 introuvable après download'); }
-        dbg('doProfilesTask DL ok, exe=' + exePath + ' running...');
-        runDelprof2(exePath, profileDays, 30 * 60 * 1000, function (ok, freed, removed, log) {
-            dbg('doProfilesTask DONE ok=' + ok + ' freed=' + freed + ' removed=' + removed + ' logTail=' + (log || '').slice(-300).replace(/[\r\n]+/g, ' | '));
-            cb(ok, freed, removed, log);
-        });
+function doProfilesTask(data, profileDays, cb) {
+    dbg('doProfilesTask (native) start days=' + profileDays);
+    var script = buildPsProfileClean(profileDays, PROFILE_SKIP);
+    runPowerShell(script, 30 * 60 * 1000, function (ok, _bytes, log) {
+        var deletedM = (log || '').match(/MAINTCTL_DELETED:(\d+)/);
+        var errorsM = (log || '').match(/MAINTCTL_ERRORS:(\d+)/);
+        var freedM = (log || '').match(/MAINTCTL_FREED:(\d+)/);
+        var exitM = (log || '').match(/MAINTCTL_EXIT:(-?\d+)/);
+        var deleted = deletedM ? parseInt(deletedM[1], 10) : 0;
+        var errors = errorsM ? parseInt(errorsM[1], 10) : 0;
+        var freed = freedM ? parseInt(freedM[1], 10) : 0;
+        var exitCode = exitM ? parseInt(exitM[1], 10) : -1;
+        var success = ok && exitCode === 0;
+        dbg('doProfilesTask DONE ok=' + success + ' deleted=' + deleted + ' errors=' + errors + ' freed=' + freed);
+        dbg('doProfilesTask FULL LOG:\r\n' + (log || ''));
+        cb(success, freed, deleted, log);
     });
 }
 
