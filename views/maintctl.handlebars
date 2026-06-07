@@ -366,6 +366,17 @@
   </div>
 </div>
 
+<!-- Modal historique nettoyages d'un poste -->
+<div id="cleanHistModal" class="modalBg" style="display:none">
+  <div class="modal" style="max-width: 900px">
+    <h3 id="cleanHistTitle">Historique</h3>
+    <div id="cleanHistBody" style="margin-top:8px"></div>
+    <div style="text-align:right; margin-top:12px">
+      <button id="cleanHistCloseBtn">Fermer</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal détails périphérique -->
 <div id="devModal" class="modalBg">
   <div class="modal">
@@ -580,17 +591,68 @@ function renderAgents() {
       + '<span class="badge">' + escapeHtml(a.family || a.os || '?') + '</span>'
       + (a.model ? '<span class="badge" title="Modèle PC">' + escapeHtml(a.model) + '</span>' : '')
       + '</div>'
-      + '</div></div>';
+      + '</div>'
+      + '<button class="drvHistBtn cleanHistBtn" data-id="' + a.id + '" title="Historique des nettoyages sur ce poste">Hist</button>'
+      + '</div>';
   });
   body.innerHTML = html;
   Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
-    row.addEventListener('click', function () {
+    row.addEventListener('click', function (e) {
+      if (e.target.classList.contains('cleanHistBtn')) return;
       var id = row.getAttribute('data-id');
       selected[id] = !selected[id];
       if (!selected[id]) delete selected[id];
       updateSelCount();
       renderAgents();
     });
+  });
+  Array.prototype.forEach.call(body.querySelectorAll('.cleanHistBtn'), function (b) {
+    b.addEventListener('click', function (e) {
+      e.stopPropagation();
+      showCleanHistory(b.getAttribute('data-id'));
+    });
+  });
+}
+
+function showCleanHistory(nodeId) {
+  var agent = agents.filter(function (a) { return a.id === nodeId; })[0];
+  var modal = document.getElementById('cleanHistModal');
+  var title = document.getElementById('cleanHistTitle');
+  var body = document.getElementById('cleanHistBody');
+  title.textContent = 'Historique nettoyages — ' + ((agent && agent.name) || nodeId.slice(0, 12));
+  body.innerHTML = '<div class="empty">Chargement…</div>';
+  modal.style.display = 'flex';
+  getJson(BASE + '&action=nodeHistory&kind=clean&nodeId=' + encodeURIComponent(nodeId)).then(function (r) {
+    if (r.error) { body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(r.error) + '</div>'; return; }
+    if (!r.runs || !r.runs.length) { body.innerHTML = '<div class="empty">Aucun nettoyage enregistré pour ce poste.</div>'; return; }
+    var rows = r.runs.map(function (h) {
+      var statusBadge;
+      if (h.status === 'done') statusBadge = '<span class="resCell ok">terminé</span>';
+      else if (h.status === 'error') statusBadge = '<span class="resCell ko" title="' + escapeHtml(h.error || '') + '">erreur</span>';
+      else if (h.status === 'offline') statusBadge = '<span class="resCell off">offline</span>';
+      else if (h.status === 'running') statusBadge = '<span class="resCell run">en cours</span>';
+      else if (h.status === 'aborted') statusBadge = '<span class="resCell ko" title="' + escapeHtml(h.error || '') + '">abandonné</span>';
+      else statusBadge = escapeHtml(h.status || '?');
+      var tasks = (h.tasks || []).join(', ');
+      if (h.tasks && h.tasks.indexOf('profiles') >= 0 && h.profileDays) {
+        tasks = tasks.replace('profiles', 'profiles >' + h.profileDays + 'j');
+      }
+      var bytes = (typeof h.totalBytes === 'number') ? fmtBytes(h.totalBytes) : '—';
+      return '<tr>'
+        + '<td>' + escapeHtml(fmtMtime(h.timestamp)) + '</td>'
+        + '<td>' + escapeHtml(tasks) + '</td>'
+        + '<td>' + statusBadge + '</td>'
+        + '<td>' + bytes + '</td>'
+        + '<td style="font-size:11px; color:#666">' + escapeHtml(h.user || '') + '</td>'
+        + '</tr>';
+    }).join('');
+    body.innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:13px">'
+      + '<thead><tr style="background:#f5f5f5; text-align:left">'
+      + '<th style="padding:6px">Date</th><th style="padding:6px">Tâches</th><th style="padding:6px">Statut</th>'
+      + '<th style="padding:6px">Libéré</th><th style="padding:6px">Par</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }).catch(function (e) {
+    body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(e.message) + '</div>';
   });
 }
 
@@ -629,6 +691,7 @@ function runClean() {
   getJson(BASE + '&action=run&payload=' + encodeURIComponent(payload)).then(function (r) {
     if (r.error) { alert('Erreur: ' + r.error); return; }
     currentRunId = r.runId;
+    try { localStorage.setItem('maintctl_currentRunId', r.runId); } catch (_) {}
     document.getElementById('results').style.display = 'block';
     pollRun();
   }).catch(function (e) { alert('Erreur: ' + e.message); });
@@ -637,11 +700,21 @@ function runClean() {
 function pollRun() {
   if (!currentRunId) return;
   getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(currentRunId)).then(function (run) {
+    if (run.error) {
+      // Run inconnu (probablement nettoyé côté serveur) → on oublie
+      try { localStorage.removeItem('maintctl_currentRunId'); } catch (_) {}
+      currentRunId = null;
+      document.getElementById('results').style.display = 'none';
+      return;
+    }
     renderResults(run);
     var allDone = Object.values(run.results).every(function (r) {
       return r.status === 'done' || r.status === 'error' || r.status === 'offline' || r.status === 'aborted';
     });
-    if (!allDone) {
+    if (allDone) {
+      // Plus de polling, mais on garde l'affichage pour que l'utilisateur voie le résultat
+      try { localStorage.removeItem('maintctl_currentRunId'); } catch (_) {}
+    } else {
       clearTimeout(pollTimer);
       pollTimer = setTimeout(pollRun, 3000);
     }
@@ -649,6 +722,16 @@ function pollRun() {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(pollRun, 5000);
   });
+}
+
+function restoreCleanRun() {
+  try {
+    var stored = localStorage.getItem('maintctl_currentRunId');
+    if (!stored) return;
+    currentRunId = stored;
+    document.getElementById('results').style.display = 'block';
+    pollRun();
+  } catch (_) {}
 }
 
 function renderResults(run) {
@@ -1296,19 +1379,38 @@ function runDriverInstall() {
   getJson(BASE + '&action=driverInstall&payload=' + encodeURIComponent(payload)).then(function (r) {
     if (r.error) { alert('Erreur: ' + r.error); return; }
     drvRunId = r.runId;
+    try { localStorage.setItem('maintctl_drvRunId', r.runId); } catch (_) {}
     document.getElementById('drvResults').style.display = 'block';
     pollDrvRun();
   }).catch(function (e) { alert('Erreur: ' + e.message); });
 }
 
+function restoreDrvRun() {
+  try {
+    var stored = localStorage.getItem('maintctl_drvRunId');
+    if (!stored) return;
+    drvRunId = stored;
+    document.getElementById('drvResults').style.display = 'block';
+    pollDrvRun();
+  } catch (_) {}
+}
+
 function pollDrvRun() {
   if (!drvRunId) return;
   getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(drvRunId)).then(function (run) {
+    if (run.error) {
+      try { localStorage.removeItem('maintctl_drvRunId'); } catch (_) {}
+      drvRunId = null;
+      document.getElementById('drvResults').style.display = 'none';
+      return;
+    }
     renderDrvResults(run);
     var allDone = Object.values(run.results).every(function (r) {
       return r.status === 'done' || r.status === 'error' || r.status === 'offline' || r.status === 'aborted';
     });
-    if (!allDone) {
+    if (allDone) {
+      try { localStorage.removeItem('maintctl_drvRunId'); } catch (_) {}
+    } else {
       clearTimeout(drvPollTimer);
       drvPollTimer = setTimeout(pollDrvRun, 3000);
     }
@@ -1349,6 +1451,9 @@ function renderDrvResults(run) {
 document.getElementById('drvRefreshBtn').addEventListener('click', function () { refreshAgents().then(refreshDrivers); });
 document.getElementById('drvHistCloseBtn').addEventListener('click', function () {
   document.getElementById('drvHistModal').style.display = 'none';
+});
+document.getElementById('cleanHistCloseBtn').addEventListener('click', function () {
+  document.getElementById('cleanHistModal').style.display = 'none';
 });
 document.getElementById('drvUploadZipBtn').addEventListener('click', function () {
   document.getElementById('drvUploadZipInput').click();
@@ -1711,7 +1816,11 @@ document.getElementById('devErrorsOnly').addEventListener('change', renderDevice
 document.getElementById('devShowGhosts').addEventListener('change', renderDevices);
 document.getElementById('devShowHidden').addEventListener('change', renderDevices);
 
-refreshAgents();
+refreshAgents().then(function () {
+  // Restaure une tâche en cours si on a fermé la page entre-temps
+  restoreCleanRun();
+  restoreDrvRun();
+});
 </script>
 
 </body>

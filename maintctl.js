@@ -735,18 +735,26 @@ module.exports.maintctl = function (parent) {
                 if (!r || r.kind !== kind) return;
                 const res2 = r.results && r.results[nodeId];
                 if (!res2) return;
-                out.push({
+                const entry = {
                     runId: r.id,
                     timestamp: r.timestamp,
                     user: r.user,
-                    driver: r.driver,
                     status: res2.status,
                     step: res2.step,
-                    installed: res2.installed,
-                    errors: res2.errors,
-                    rebootRequired: res2.rebootRequired,
                     error: res2.error,
-                });
+                };
+                if (kind === 'driver') {
+                    entry.driver = r.driver;
+                    entry.installed = res2.installed;
+                    entry.errors = res2.errors;
+                    entry.rebootRequired = res2.rebootRequired;
+                } else if (kind === 'clean') {
+                    entry.tasks = r.tasks;
+                    entry.profileDays = r.profileDays;
+                    entry.totalBytes = res2.totalBytes;
+                    entry.tasksResult = res2.tasks;
+                }
+                out.push(entry);
             });
             out.sort((a, b) => b.timestamp - a.timestamp);
             return sendJson(res, 200, { nodeId: nodeId, runs: out.slice(0, 50) });
@@ -864,6 +872,7 @@ module.exports.maintctl = function (parent) {
             const runId = crypto.randomBytes(8).toString('hex');
             const run = {
                 id: runId,
+                kind: 'clean',
                 timestamp: Date.now(),
                 user: (user && (user.name || user._id)) || 'unknown',
                 tasks: tasks,
