@@ -243,41 +243,77 @@ function downloadFile(url, dest, cb) {
     }, 60000);
 }
 
-// Exécute DelProf2.exe. Renvoie { ok, bytes, removed, log } via onDone.
+// Exécute DelProf2.exe via un wrapper PowerShell qui utilise
+// Start-Process -Wait -WindowStyle Hidden -PassThru. Le lancement direct
+// par cp.execFile faisait que l'event 'exit' ne se déclenchait jamais
+// dans Duktape (DelProf2 ne ferme pas stdio proprement même avec /u).
+// On lit l'exit code via -PassThru, et le delta de place libre sur C:.
 function runDelprof2(exePath, days, timeoutMs, onDone) {
     var fs = require('fs');
     var cp = require('child_process');
+    var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+
+    // Construit la liste d'args PS sous forme @('/q','/i','/d:90','/ed:X',…)
+    // Note : /q = quiet, /i = ignore errors, /d:N = profils inactifs >N jours,
+    // /ed:nom = exclure de la suppression (préserver).
+    var args = ['/q', '/i', '/d:' + (parseInt(days, 10) || 90)];
+    PROFILE_SKIP.forEach(function (n) { args.push('/ed:' + n); });
+    var psArgsLit = args.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
+
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var ps1 = tmpRoot + '\\maintctl_delprof_' + Date.now() + '.ps1';
+    var script = ''
+        + '$ErrorActionPreference = "Stop";'
+        + 'try {'
+        + '  $before = (Get-PSDrive C).Free;'
+        + '  $p = Start-Process -FilePath \'' + exePath.replace(/'/g, "''") + '\''
+        + '    -ArgumentList @(' + psArgsLit + ')'
+        + '    -Wait -WindowStyle Hidden -PassThru;'
+        + '  $after = (Get-PSDrive C).Free;'
+        + '  $freed = [int64]($after - $before); if ($freed -lt 0) { $freed = 0 }'
+        + '  Write-Host ("MAINTCTL_EXIT:" + [int]$p.ExitCode);'
+        + '  Write-Host ("MAINTCTL_FREED:" + $freed);'
+        + '} catch {'
+        + '  Write-Host ("MAINTCTL_ERR:" + $_.Exception.Message);'
+        + '  exit 1;'
+        + '}';
+
+    try { fs.writeFileSync(ps1, script); }
+    catch (e) { return onDone(false, 0, 0, 'write ps1: ' + e); }
+
+    var child;
+    try {
+        child = cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', ps1]);
+    } catch (e) {
+        try { fs.unlinkSync(ps1); } catch (_) {}
+        return onDone(false, 0, 0, 'spawn ps: ' + e);
+    }
+
     var log = '';
     var done = false;
-    var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-    cp.execFile(psExe, ['-NoProfile', '-Command', '(Get-PSDrive C).Free'], function (err, stdout) {
-        var before = parseInt((stdout || '').trim(), 10) || 0;
-        var child;
-        try {
-            child = cp.execFile(exePath, buildDelprof2Args(days));
-        } catch (e) { return onDone(false, 0, 0, 'spawn DelProf2 failed: ' + e); }
+    if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
+    if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
 
-        if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
-        if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
-
-        function finish(ok, errMsg) {
-            if (done) return;
-            done = true;
-            cp.execFile(psExe, ['-NoProfile', '-Command', '(Get-PSDrive C).Free'], function (err2, stdout2) {
-                var after = parseInt((stdout2 || '').trim(), 10) || 0;
-                var freed = after - before;
-                if (freed < 0) freed = 0;
-                var removed = (log.match(/Deleted profile:/gi) || []).length;
-                onDone(ok, freed, removed, log + (errMsg ? '\n' + errMsg : ''));
-            });
-        }
-        child.on('exit', function () { finish(true, ''); });
-        setTimeout(function () {
-            if (done) return;
-            try { child.kill(); } catch (_) {}
-            finish(false, 'DelProf2 timeout');
-        }, timeoutMs);
-    });
+    function finish() {
+        if (done) return;
+        done = true;
+        try { fs.unlinkSync(ps1); } catch (_) {}
+        var exitMatch = log.match(/MAINTCTL_EXIT:(-?\d+)/);
+        var freedMatch = log.match(/MAINTCTL_FREED:(\d+)/);
+        var exitCode = exitMatch ? parseInt(exitMatch[1], 10) : -1;
+        var freed = freedMatch ? parseInt(freedMatch[1], 10) : 0;
+        // DelProf2 : 0 = OK. /i = ignore errors donc devrait toujours sortir 0.
+        var ok = (exitCode === 0);
+        var removed = (log.match(/Deleted profile:/gi) || []).length;
+        onDone(ok, freed, removed, log);
+    }
+    child.on('exit', finish);
+    setTimeout(function () {
+        if (done) return;
+        try { child.kill(); } catch (_) {}
+        log += '\nMAINTCTL_ERR: timeout après ' + Math.round(timeoutMs / 1000) + 's';
+        finish();
+    }, timeoutMs);
 }
 
 function runPowerShell(script, timeoutMs, onDone) {
