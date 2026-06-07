@@ -196,8 +196,10 @@ function buildDelprof2Args(days) {
     return args;
 }
 
-// Download via PowerShell pour bypasser le certificat auto-signé de MC
-// (la stack TLS de Duktape ignore rejectUnauthorized et plante au handshake).
+// Download via curl.exe (natif Win10 ≥ 1803). Bypass cert MC auto-signé
+// avec -k. PowerShell wc.DownloadFile partait en hang TLS infini sur
+// certaines configs Win10. curl est beaucoup plus fiable et a un vrai
+// --max-time qui kill proprement.
 function downloadFile(url, dest, cb) {
     dbg('downloadFile start url=' + url + ' dest=' + dest);
     var fs = require('fs');
@@ -208,10 +210,61 @@ function downloadFile(url, dest, cb) {
         done = true;
         cb(err || null);
     }
+    var curlExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\curl.exe';
+    if (!fs.existsSync(curlExe)) {
+        dbg('downloadFile curl absent → fallback PS WebClient');
+        return downloadFilePS(url, dest, cb);
+    }
+    // Supprime fichier précédent s'il existe (sinon curl peut hésiter)
+    try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (_) {}
+    var child;
+    try {
+        child = cp.execFile(curlExe, [
+            '-k',                   // ignore cert (auto-signé MC)
+            '-s', '-S',             // silent mais affiche les erreurs
+            '-L',                   // suit les redirects
+            '--max-time', '90',     // hard timeout 90s côté curl
+            '--connect-timeout', '15',
+            '-o', dest,
+            url
+        ]);
+    } catch (e) {
+        return finish(new Error('spawn curl: ' + e));
+    }
+    var log = '';
+    if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
+    if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
+    child.on('exit', function (code) {
+        dbg('downloadFile curl exited code=' + code + ' log=' + log.trim().slice(0, 200));
+        if (!fs.existsSync(dest)) return finish(new Error('curl: ' + (log.trim() || 'pas de fichier (code ' + code + ')')));
+        var st;
+        try { st = fs.statSync(dest); } catch (_) { return finish(new Error('stat dest failed')); }
+        if (!st.size) {
+            try { fs.unlinkSync(dest); } catch (_) {}
+            return finish(new Error('downloaded empty: ' + log.trim()));
+        }
+        dbg('downloadFile OK size=' + st.size);
+        finish(null);
+    });
+    // Watchdog côté Node : 120s (curl a déjà --max-time 90, c'est un filet)
+    setTimeout(function () {
+        if (done) return;
+        dbg('downloadFile TIMEOUT 120s');
+        try { child.kill(); } catch (_) {}
+        finish(new Error('download timeout (curl bloqué)'));
+    }, 120000);
+}
+
+// Fallback si curl absent (très vieilles versions Win 10 < 1803 ou Win 7).
+function downloadFilePS(url, dest, cb) {
+    var fs = require('fs');
+    var cp = require('child_process');
+    var done = false;
+    function finish(err) { if (done) return; done = true; cb(err || null); }
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
     var script = ''
         + 'try {'
-        + '  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls;'
+        + '  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;'
         + '  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true };'
         + '  $wc = New-Object System.Net.WebClient;'
         + '  $wc.DownloadFile(\'' + url.replace(/'/g, "''") + '\', \'' + dest.replace(/'/g, "''") + '\');'
@@ -225,31 +278,19 @@ function downloadFile(url, dest, cb) {
         child = cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', ps1]);
     } catch (e) {
         try { fs.unlinkSync(ps1); } catch (_) {}
-        return finish(new Error('spawn ps download: ' + e));
+        return finish(new Error('spawn ps: ' + e));
     }
     var log = '';
     if (child.stdout) child.stdout.on('data', function (d) { log += d.toString(); });
     if (child.stderr) child.stderr.on('data', function (d) { log += d.toString(); });
     child.on('exit', function () {
-        dbg('downloadFile child exited, log=' + log.trim().slice(0, 200));
         try { fs.unlinkSync(ps1); } catch (_) {}
-        if (!fs.existsSync(dest)) return finish(new Error('download failed: ' + log.trim()));
-        var st;
-        try { st = fs.statSync(dest); } catch (_) { return finish(new Error('stat dest failed')); }
-        if (!st.size) {
-            try { fs.unlinkSync(dest); } catch (_) {}
-            return finish(new Error('downloaded file empty: ' + log.trim()));
-        }
-        dbg('downloadFile OK size=' + st.size);
+        if (!fs.existsSync(dest)) return finish(new Error('PS download: ' + log.trim()));
+        var st = fs.statSync(dest);
+        if (!st.size) { try { fs.unlinkSync(dest); } catch (_) {} return finish(new Error('empty')); }
         finish(null);
     });
-    setTimeout(function () {
-        if (done) return;
-        dbg('downloadFile TIMEOUT');
-        try { child.kill(); } catch (_) {}
-        try { fs.unlinkSync(ps1); } catch (_) {}
-        finish(new Error('download timeout'));
-    }, 60000);
+    setTimeout(function () { if (done) return; try { child.kill(); } catch (_) {} finish(new Error('PS timeout')); }, 90000);
 }
 
 // Exécute DelProf2.exe via un wrapper PowerShell qui utilise
