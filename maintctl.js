@@ -71,6 +71,96 @@ function deriveModel(sys) {
     return (manufShort + ' ' + product).trim();
 }
 
+// Extrait les métriques santé (disque C: + dernier boot) depuis un doc
+// sysinfo MeshCentral. Robuste aux variations de structure entre versions MC.
+function deriveHealth(sys) {
+    const out = { diskFreeGB: null, diskTotalGB: null, diskFreePct: null, lastBoot: null, uptimeDays: null };
+    if (!sys) return out;
+    const hw = sys.hardware || {};
+    const win = hw.windows || {};
+    // --- Disque C: ---
+    // Plusieurs emplacements possibles selon version MC : logicalDisks, drives, volumes
+    const candidates = [].concat(
+        Array.isArray(win.logicalDisks) ? win.logicalDisks : [],
+        Array.isArray(win.drives) ? win.drives : [],
+        Array.isArray(win.volumes) ? win.volumes : []
+    );
+    let c = null;
+    for (let i = 0; i < candidates.length; i++) {
+        const d = candidates[i] || {};
+        const id = String(d.DeviceID || d.Caption || d.DriveLetter || d.Name || '').toUpperCase();
+        if (id.indexOf('C:') === 0) { c = d; break; }
+    }
+    if (!c && candidates.length) c = candidates[0]; // fallback : 1er volume
+    if (c) {
+        const free = Number(c.FreeSpace || c.Free || c.AvailableBytes || 0);
+        const total = Number(c.Size || c.Total || c.TotalBytes || c.Capacity || 0);
+        if (total > 0) {
+            out.diskFreeGB = +(free / 1073741824).toFixed(1);
+            out.diskTotalGB = +(total / 1073741824).toFixed(1);
+            out.diskFreePct = Math.round((free / total) * 100);
+        }
+    }
+    // --- LastBootUpTime ---
+    const osi = win.osInfo && (Array.isArray(win.osInfo) ? win.osInfo[0] : win.osInfo);
+    let lb = osi && (osi.LastBootUpTime || osi.LastBoot || osi.lastBoot);
+    if (!lb && win.lastBoot) lb = win.lastBoot;
+    if (lb) {
+        let bootMs = null;
+        if (typeof lb === 'number') bootMs = lb < 1e12 ? lb * 1000 : lb;
+        else if (typeof lb === 'string') {
+            // Format WMI CIM_DATETIME : YYYYMMDDHHMMSS.mmmmmm±UUU
+            const m = lb.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+            if (m) {
+                bootMs = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+            } else {
+                const t = Date.parse(lb);
+                if (!isNaN(t)) bootMs = t;
+            }
+        }
+        if (bootMs) {
+            out.lastBoot = bootMs;
+            out.uptimeDays = +((Date.now() - bootMs) / 86400000).toFixed(1);
+        }
+    }
+    return out;
+}
+
+// Seuils d'alerte santé. Surchargables dans maintctl-config.json sous "health".
+function loadHealthConfig() {
+    const defaults = {
+        diskCriticalGB: 2,   // disque libre < 2 Go = critique
+        diskWarnGB: 10,      // < 10 Go = warning
+        uptimeWarnDays: 21,  // pas redémarré depuis 21 jours = warning
+        uptimeCriticalDays: 45,
+    };
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'maintctl-config.json'), 'utf8'));
+        if (cfg && cfg.health) Object.assign(defaults, cfg.health);
+    } catch (_) {}
+    return defaults;
+}
+
+function evalAlerts(health, online, cfg) {
+    const alerts = [];
+    if (!online) return alerts; // pas d'alerte sur poste éteint (peut être normal hors cours)
+    if (health.diskFreeGB != null) {
+        if (health.diskFreeGB < cfg.diskCriticalGB) {
+            alerts.push({ level: 'critical', code: 'disk', message: 'Disque C: presque plein (' + health.diskFreeGB + ' Go libres)' });
+        } else if (health.diskFreeGB < cfg.diskWarnGB) {
+            alerts.push({ level: 'warning', code: 'disk', message: 'Disque C: bas (' + health.diskFreeGB + ' Go libres)' });
+        }
+    }
+    if (health.uptimeDays != null) {
+        if (health.uptimeDays > cfg.uptimeCriticalDays) {
+            alerts.push({ level: 'critical', code: 'uptime', message: 'Pas redémarré depuis ' + Math.round(health.uptimeDays) + ' jours' });
+        } else if (health.uptimeDays > cfg.uptimeWarnDays) {
+            alerts.push({ level: 'warning', code: 'uptime', message: 'Pas redémarré depuis ' + Math.round(health.uptimeDays) + ' jours' });
+        }
+    }
+    return alerts;
+}
+
 function newDownloadToken(kind, payload) {
     const t = crypto.randomBytes(24).toString('hex');
     downloadTokens[t] = { kind: kind, payload: payload || null, expires: Date.now() + DOWNLOAD_TTL_MS };
@@ -496,6 +586,62 @@ module.exports.maintctl = function (parent) {
                 if (err) return sendJson(res, 500, { error: err.message });
                 sendJson(res, 200, { agents: agents, meshes: meshes || [] });
             });
+        }
+
+        if (action === 'health') {
+            const db = obj.meshServer && obj.meshServer.db;
+            if (!db || typeof db.GetAllType !== 'function') return sendJson(res, 500, { error: 'MC DB inaccessible' });
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const hcfg = loadHealthConfig();
+            db.GetAllType('mesh', function (meshErr, meshDocs) {
+                if (meshErr) return sendJson(res, 500, { error: meshErr.message });
+                const meshById = {};
+                (meshDocs || []).forEach((m) => { if (m && m._id) meshById[m._id] = m.name || m._id; });
+                db.GetAllType('sysinfo', function (sErr, sysDocs) {
+                    const sysById = {};
+                    if (!sErr && Array.isArray(sysDocs)) {
+                        sysDocs.forEach((s) => {
+                            if (!s || !s._id) return;
+                            const nid = (typeof s._id === 'string' && s._id.indexOf('si') === 0) ? s._id.slice(2) : s._id;
+                            sysById[nid] = s;
+                        });
+                    }
+                    db.GetAllType('node', function (err, docs) {
+                        if (err) return sendJson(res, 500, { error: err.message });
+                        let critCount = 0, warnCount = 0;
+                        const agents = (docs || [])
+                            .filter((d) => d && d._id && (d.agent || d.osdesc))
+                            .map((d) => {
+                                const online = !!wsagents[d._id];
+                                const sys = sysById[d._id];
+                                const health = deriveHealth(sys);
+                                const alerts = evalAlerts(health, online, hcfg);
+                                alerts.forEach((a) => { if (a.level === 'critical') critCount++; else warnCount++; });
+                                return {
+                                    id: d._id,
+                                    name: d.name || d.host || d._id,
+                                    mesh: meshById[d.meshid] || '',
+                                    online: online,
+                                    model: deriveModel(sys),
+                                    health: health,
+                                    alerts: alerts,
+                                };
+                            });
+                        agents.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
+                        const meshes = Object.keys(meshById).map((id) => ({ id: id, name: meshById[id] }));
+                        meshes.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true }));
+                        sendJson(res, 200, {
+                            agents: agents,
+                            meshes: meshes,
+                            alertCount: critCount + warnCount,
+                            criticalCount: critCount,
+                            warningCount: warnCount,
+                            thresholds: hcfg,
+                        });
+                    });
+                });
+            });
+            return;
         }
 
         if (action === 'run') {

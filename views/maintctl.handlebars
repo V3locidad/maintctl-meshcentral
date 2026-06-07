@@ -103,6 +103,39 @@
   .drvDelBtn:hover { background: #f8d7da; color: #721c24; border-color: #f5c6cb; }
   .drvHistBtn { flex: 0 0 auto; padding: 2px 8px; margin-left: 4px; border: 1px solid #ddd; background: #fff; border-radius: 3px; cursor: pointer; font-size: 11px; color: #555; }
   .drvHistBtn:hover { background: #e7f3ff; border-color: #b6dafd; color: #0366d6; }
+  .alertBadge { display: inline-block; min-width: 18px; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: #d9534f; color: #fff; font-size: 11px; font-weight: 600; text-align: center; line-height: 18px; }
+  .alertBadge.warn { background: #f0ad4e; }
+  /* --- Santé : carte par salle --- */
+  .healthBar { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: #f8f9fa; border: 1px solid #e3e6ea; border-radius: 4px; margin-bottom: 10px; flex-wrap: wrap; }
+  .healthBar .stat { font-size: 13px; color: #555; }
+  .healthBar .stat b { color: #222; font-size: 15px; margin-right: 4px; }
+  .healthBar .stat.crit b { color: #c9302c; }
+  .healthBar .stat.warn b { color: #d58512; }
+  .healthAlerts { border: 1px solid #f5c6cb; background: #fdf5f5; border-radius: 4px; padding: 8px 12px; margin-bottom: 10px; max-height: 200px; overflow: auto; }
+  .healthAlerts .item { padding: 4px 0; font-size: 12px; border-bottom: 1px solid #fde0e3; display: flex; gap: 8px; align-items: center; }
+  .healthAlerts .item:last-child { border-bottom: none; }
+  .healthAlerts .item .lvl { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; }
+  .healthAlerts .item .lvl.critical { background: #d9534f; }
+  .healthAlerts .item .lvl.warning  { background: #f0ad4e; }
+  .healthAlerts .item .pcName { font-weight: 600; min-width: 130px; }
+  .salleGroup { margin-bottom: 16px; }
+  .salleGroup h4 { margin: 0 0 6px 0; font-size: 13px; color: #444; padding: 4px 8px; background: #eef1f4; border-radius: 3px; display: flex; align-items: center; gap: 8px; }
+  .salleGroup h4 .count { color: #888; font-weight: normal; font-size: 12px; }
+  .healthGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  .pcCard { border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; background: #fff; font-size: 12px; cursor: pointer; transition: box-shadow 0.1s; position: relative; }
+  .pcCard:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+  .pcCard.offline { background: #f5f5f5; color: #888; }
+  .pcCard.warning { border-color: #f0ad4e; border-left: 4px solid #f0ad4e; }
+  .pcCard.critical { border-color: #d9534f; border-left: 4px solid #d9534f; background: #fff8f8; }
+  .pcCard .name { font-weight: 600; font-size: 13px; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .pcCard .metric { display: flex; justify-content: space-between; padding: 1px 0; color: #555; }
+  .pcCard .metric .v { color: #222; }
+  .pcCard .metric.crit .v { color: #c9302c; font-weight: 600; }
+  .pcCard .metric.warn .v { color: #d58512; font-weight: 600; }
+  .diskBar { height: 4px; background: #e3e6ea; border-radius: 2px; margin-top: 3px; overflow: hidden; }
+  .diskBar .fill { height: 100%; background: #5cb85c; }
+  .diskBar .fill.warn { background: #f0ad4e; }
+  .diskBar .fill.crit { background: #d9534f; }
 </style>
 </head>
 <body>
@@ -113,6 +146,7 @@
   <div class="tab active" data-tab="clean">Nettoyage</div>
   <div class="tab" data-tab="devices">Périphériques</div>
   <div class="tab" data-tab="drivers">Drivers</div>
+  <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
 </div>
 
 <!-- ============ TAB NETTOYAGE ============ -->
@@ -235,6 +269,34 @@
       <tbody id="drvResultsBody"></tbody>
     </table>
   </div>
+</div>
+
+<!-- ============ TAB SANTÉ ============ -->
+<div id="panel-health" class="panel">
+  <div class="bar">
+    <button id="healthRefreshBtn">Rafraîchir</button>
+    <label style="font-size:12px; color:#666">
+      <input type="checkbox" id="healthOnlineOnly" checked> Postes allumés uniquement
+    </label>
+    <label style="font-size:12px; color:#666">
+      <input type="checkbox" id="healthAlertsOnly"> Avec alerte seulement
+    </label>
+    <span style="flex:1"></span>
+    <span id="healthLastUpdate" style="font-size:11px; color:#888"></span>
+    <span id="healthAutoInfo" style="font-size:11px; color:#888">refresh auto : 5 min</span>
+  </div>
+
+  <div class="healthBar">
+    <span class="stat"><b id="healthTotalOnline">0</b>postes allumés</span>
+    <span class="stat crit"><b id="healthCritCount">0</b>alertes critiques</span>
+    <span class="stat warn"><b id="healthWarnCount">0</b>warnings</span>
+    <span style="flex:1"></span>
+    <span id="healthThresholds" style="font-size:11px; color:#888"></span>
+  </div>
+
+  <div id="healthAlertsList" class="healthAlerts" style="display:none"></div>
+
+  <div id="healthGroups"><div class="empty">Chargement…</div></div>
 </div>
 
 <!-- Modal historique drivers d'un poste -->
@@ -1260,6 +1322,169 @@ document.querySelector('.tab[data-tab="drivers"]').addEventListener('click', fun
   renderDrvAgents();
   refreshDrivers();
 });
+
+// ============================ SANTÉ ============================
+var healthData = null;
+var healthTimer = null;
+var HEALTH_POLL_MS = 5 * 60 * 1000;
+
+function fmtBoot(ms) {
+  if (!ms) return '—';
+  var d = new Date(ms);
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth()+1)).slice(-2) + '/' + d.getFullYear()
+       + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+
+function refreshHealth() {
+  getJson(BASE + '&action=health').then(function (data) {
+    healthData = data;
+    renderHealth();
+  }).catch(function (e) {
+    document.getElementById('healthGroups').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(e.message) + '</div>';
+  });
+}
+
+function renderHealth() {
+  if (!healthData) return;
+  var onlineOnly = document.getElementById('healthOnlineOnly').checked;
+  var alertsOnly = document.getElementById('healthAlertsOnly').checked;
+
+  // Badge sur l'onglet
+  var badge = document.getElementById('healthAlertBadge');
+  var total = healthData.alertCount || 0;
+  if (total > 0) {
+    badge.textContent = total;
+    badge.className = (healthData.criticalCount > 0) ? 'alertBadge' : 'alertBadge warn';
+    badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+  }
+
+  // Stats en haut
+  var onlineCount = healthData.agents.filter(function (a) { return a.online; }).length;
+  document.getElementById('healthTotalOnline').textContent = onlineCount;
+  document.getElementById('healthCritCount').textContent = healthData.criticalCount || 0;
+  document.getElementById('healthWarnCount').textContent = healthData.warningCount || 0;
+  var th = healthData.thresholds || {};
+  document.getElementById('healthThresholds').textContent =
+    'seuils : disque <' + th.diskWarnGB + ' Go (warn), <' + th.diskCriticalGB + ' Go (crit) · uptime >' + th.uptimeWarnDays + ' j (warn), >' + th.uptimeCriticalDays + ' j (crit)';
+  document.getElementById('healthLastUpdate').textContent = 'maj : ' + fmtBoot(Date.now());
+
+  // Liste des alertes (en haut, condensée)
+  var alertItems = [];
+  healthData.agents.forEach(function (a) {
+    (a.alerts || []).forEach(function (al) {
+      alertItems.push({ name: a.name, mesh: a.mesh, level: al.level, message: al.message, id: a.id });
+    });
+  });
+  // Critiques d'abord
+  alertItems.sort(function (a, b) {
+    if (a.level !== b.level) return a.level === 'critical' ? -1 : 1;
+    return (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true });
+  });
+  var alertsBox = document.getElementById('healthAlertsList');
+  if (alertItems.length) {
+    alertsBox.innerHTML = alertItems.map(function (i) {
+      return '<div class="item">'
+        + '<span class="lvl ' + i.level + '"></span>'
+        + '<span class="pcName">' + escapeHtml(i.name) + '</span>'
+        + '<span style="color:#888">' + escapeHtml(i.mesh || '') + '</span>'
+        + '<span>' + escapeHtml(i.message) + '</span>'
+        + '</div>';
+    }).join('');
+    alertsBox.style.display = '';
+  } else {
+    alertsBox.style.display = 'none';
+  }
+
+  // Filtre + groupement par salle (mesh)
+  var filtered = healthData.agents.filter(function (a) {
+    if (onlineOnly && !a.online) return false;
+    if (alertsOnly && !(a.alerts && a.alerts.length)) return false;
+    return true;
+  });
+  var byMesh = {};
+  filtered.forEach(function (a) {
+    var k = a.mesh || '(sans salle)';
+    if (!byMesh[k]) byMesh[k] = [];
+    byMesh[k].push(a);
+  });
+  var meshNames = Object.keys(byMesh).sort(function (a, b) {
+    return a.localeCompare(b, 'fr', { numeric: true });
+  });
+  if (!meshNames.length) {
+    document.getElementById('healthGroups').innerHTML = '<div class="empty">Aucun poste à afficher avec ces filtres.</div>';
+    return;
+  }
+  var html = '';
+  meshNames.forEach(function (m) {
+    var pcs = byMesh[m];
+    var crit = pcs.filter(function (p) { return (p.alerts || []).some(function (a) { return a.level === 'critical'; }); }).length;
+    var warn = pcs.filter(function (p) { return (p.alerts || []).some(function (a) { return a.level === 'warning'; }); }).length;
+    var sum = '';
+    if (crit) sum += ' <span style="color:#c9302c">· ' + crit + ' critique' + (crit>1?'s':'') + '</span>';
+    if (warn) sum += ' <span style="color:#d58512">· ' + warn + ' warning' + (warn>1?'s':'') + '</span>';
+    html += '<div class="salleGroup"><h4>' + escapeHtml(m) + ' <span class="count">(' + pcs.length + ')</span>' + sum + '</h4>';
+    html += '<div class="healthGrid">';
+    pcs.forEach(function (p) {
+      var worstLevel = '';
+      (p.alerts || []).forEach(function (a) {
+        if (a.level === 'critical') worstLevel = 'critical';
+        else if (a.level === 'warning' && worstLevel !== 'critical') worstLevel = 'warning';
+      });
+      var cardCls = 'pcCard';
+      if (!p.online) cardCls += ' offline';
+      else if (worstLevel) cardCls += ' ' + worstLevel;
+      var disk = p.health.diskFreeGB;
+      var diskTot = p.health.diskTotalGB;
+      var pct = p.health.diskFreePct;
+      var diskCls = '';
+      if (disk != null) {
+        if (disk < (healthData.thresholds.diskCriticalGB || 2)) diskCls = 'crit';
+        else if (disk < (healthData.thresholds.diskWarnGB || 10)) diskCls = 'warn';
+      }
+      var uptime = p.health.uptimeDays;
+      var upCls = '';
+      if (uptime != null) {
+        if (uptime > (healthData.thresholds.uptimeCriticalDays || 45)) upCls = 'crit';
+        else if (uptime > (healthData.thresholds.uptimeWarnDays || 21)) upCls = 'warn';
+      }
+      var fillW = (pct != null) ? Math.max(0, Math.min(100, 100 - pct)) : 0;
+      var fillCls = (disk != null && disk < (healthData.thresholds.diskCriticalGB || 2)) ? 'crit'
+                  : (disk != null && disk < (healthData.thresholds.diskWarnGB || 10)) ? 'warn' : '';
+      html += '<div class="' + cardCls + '" data-id="' + p.id + '" title="' + escapeHtml((p.alerts||[]).map(function(a){return a.message;}).join('\n') || (p.online ? 'OK' : 'Hors ligne')) + '">'
+        + '<div class="name">'
+        + '<span class="statusDot ' + (p.online ? 'on' : 'off') + '"></span>'
+        + escapeHtml(p.name)
+        + '</div>'
+        + '<div class="metric' + (diskCls ? ' ' + diskCls : '') + '"><span>Disque C:</span><span class="v">'
+          + (disk != null ? (disk + '/' + diskTot + ' Go') : '—') + '</span></div>'
+        + (disk != null ? '<div class="diskBar"><div class="fill ' + fillCls + '" style="width:' + fillW + '%"></div></div>' : '')
+        + '<div class="metric' + (upCls ? ' ' + upCls : '') + '"><span>Uptime</span><span class="v">'
+          + (uptime != null ? (Math.round(uptime) + ' j') : '—') + '</span></div>'
+        + '<div class="metric"><span>Dernier boot</span><span class="v" style="font-size:11px">' + fmtBoot(p.health.lastBoot) + '</span></div>'
+        + '</div>';
+    });
+    html += '</div></div>';
+  });
+  document.getElementById('healthGroups').innerHTML = html;
+}
+
+document.getElementById('healthRefreshBtn').addEventListener('click', refreshHealth);
+document.getElementById('healthOnlineOnly').addEventListener('change', renderHealth);
+document.getElementById('healthAlertsOnly').addEventListener('change', renderHealth);
+
+document.querySelector('.tab[data-tab="health"]').addEventListener('click', function () {
+  refreshHealth();
+});
+
+// Poll continu (toutes les 5 min) — alimente le badge même quand l'onglet n'est pas ouvert
+function startHealthPolling() {
+  if (healthTimer) clearInterval(healthTimer);
+  refreshHealth();
+  healthTimer = setInterval(refreshHealth, HEALTH_POLL_MS);
+}
+startHealthPolling();
 
 document.getElementById('devLoadBtn').addEventListener('click', function () { loadDevices(false); });
 document.getElementById('devRefreshBtn').addEventListener('click', function () { loadDevices(true); });
