@@ -337,8 +337,9 @@
     <label style="font-size:12px; color:#666">
       <input type="checkbox" id="healthAlertsOnly"> Avec alerte seulement
     </label>
-    <button id="glpiSyncBtn" title="Pousse l'inventaire des postes filtrés vers GLPI (Native Inventory)">Synchroniser GLPI</button>
-    <button id="glpiTestBtn" title="Test la connectivité GLPI" style="font-size:11px">Test GLPI</button>
+    <button id="glpiAgentBtn" title="Déploie GLPI-Agent.msi sur les postes filtrés (skip si déjà installé, déclenche un inventaire)">Installer GLPI Agent</button>
+    <button id="glpiSyncBtn" title="Pousse l'inventaire des postes filtrés vers GLPI (Native Inventory depuis sysinfo MC, sans agent)" style="font-size:11px">Sync direct (sans agent)</button>
+    <button id="glpiTestBtn" title="Test la connectivité GLPI" style="font-size:11px">Test</button>
     <span style="flex:1"></span>
     <span id="healthLastUpdate" style="font-size:11px; color:#888"></span>
     <span id="healthAutoInfo" style="font-size:11px; color:#888">refresh auto : 5 min</span>
@@ -1721,6 +1722,70 @@ function glpiTest() {
   });
 }
 
+function glpiAgentDeploy() {
+  if (!healthData) { alert('Pas de données. Rafraîchis d\'abord.'); return; }
+  var onlineOnly = document.getElementById('healthOnlineOnly').checked;
+  var alertsOnly = document.getElementById('healthAlertsOnly').checked;
+  var filtered = healthData.agents.filter(function (a) {
+    if (!a.online) return false; // jamais d'install sur poste offline
+    if (alertsOnly && !(a.alerts && a.alerts.length)) return false;
+    return true;
+  });
+  if (!filtered.length) { alert('Aucun poste online à déployer.'); return; }
+  if (!window.confirm('Déployer GLPI Agent sur ' + filtered.length + ' poste(s) online ?\n\nLe MSI sera téléchargé puis installé silencieusement. Skip si déjà installé (déclenche juste un inventaire).')) return;
+  var nodes = filtered.map(function (a) { return a.id; });
+  var modal = document.getElementById('glpiModal');
+  var body = document.getElementById('glpiBody');
+  var title = document.getElementById('glpiTitle');
+  title.textContent = 'Déploiement GLPI Agent (' + nodes.length + ' poste(s))…';
+  body.innerHTML = '<div class="empty">Dispatch en cours…</div>';
+  modal.style.display = 'flex';
+  var payload = JSON.stringify({ nodes: nodes });
+  getJson(BASE + '&action=glpiAgentDeploy&payload=' + encodeURIComponent(payload)).then(function (r) {
+    if (r.error) { body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(r.error) + '</div>'; return; }
+    var runId = r.runId;
+    body.innerHTML = '<div style="font-size:11px; color:#888; margin-bottom:6px">Run ' + escapeHtml(runId)
+      + ' · ' + r.dispatched + ' dispatché(s) · ' + r.offline + ' offline</div>'
+      + '<div id="glpiAgentResults"><div class="empty">Polling en cours…</div></div>';
+    pollGlpiAgent(runId);
+  }).catch(function (e) {
+    body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(e.message) + '</div>';
+  });
+}
+
+function pollGlpiAgent(runId) {
+  getJson(BASE + '&action=runStatus&runId=' + encodeURIComponent(runId)).then(function (run) {
+    if (run.error) return;
+    var byId = {};
+    healthData.agents.forEach(function (a) { byId[a.id] = a; });
+    var rows = Object.keys(run.results).map(function (nid) {
+      var r = run.results[nid];
+      var a = byId[nid] || {};
+      var st;
+      if (r.status === 'running')      st = '<span class="resCell run">en cours</span>';
+      else if (r.status === 'done')    st = '<span class="resCell ok">' + escapeHtml(r.result || 'OK') + '</span>';
+      else if (r.status === 'offline') st = '<span class="resCell off">offline</span>';
+      else if (r.status === 'aborted') st = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">abandonné</span>';
+      else st = '<span class="resCell ko" title="' + escapeHtml(r.error || '') + '">erreur</span>';
+      return '<tr>'
+        + '<td style="padding:4px 8px">' + escapeHtml(a.name || nid.slice(0, 12)) + '</td>'
+        + '<td style="padding:4px 8px">' + st + '</td>'
+        + '<td style="padding:4px 8px; font-size:11px; color:#666">' + escapeHtml(r.error || '') + '</td>'
+        + '</tr>';
+    }).join('');
+    document.getElementById('glpiAgentResults').innerHTML =
+      '<table style="width:100%; border-collapse:collapse; font-size:13px">'
+      + '<thead><tr style="background:#f5f5f5; text-align:left">'
+      + '<th style="padding:6px">Poste</th><th style="padding:6px">Statut</th><th style="padding:6px">Détail</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    var done = Object.values(run.results).every(function (r) {
+      return r.status !== 'running';
+    });
+    if (!done) setTimeout(function () { pollGlpiAgent(runId); }, 4000);
+  }).catch(function () { setTimeout(function () { pollGlpiAgent(runId); }, 6000); });
+}
+
+document.getElementById('glpiAgentBtn').addEventListener('click', glpiAgentDeploy);
 document.getElementById('glpiSyncBtn').addEventListener('click', glpiSync);
 document.getElementById('glpiTestBtn').addEventListener('click', glpiTest);
 document.getElementById('glpiCloseBtn').addEventListener('click', function () {

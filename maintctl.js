@@ -213,7 +213,11 @@ function loadGlpiConfig() {
     try {
         const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'maintctl-config.json'), 'utf8'));
         if (cfg && cfg.glpi && cfg.glpi.url) {
-            return { url: String(cfg.glpi.url).replace(/\/+$/, ''), token: cfg.glpi.token || '' };
+            return {
+                url: String(cfg.glpi.url).replace(/\/+$/, ''),
+                token: cfg.glpi.token || '',
+                tag: cfg.glpi.tag || '',
+            };
         }
     } catch (_) {}
     return null;
@@ -650,6 +654,25 @@ module.exports.maintctl = function (parent) {
                 } catch (e) {}
                 return;
             }
+            if (command.pluginaction === 'glpiAgentResult') {
+                const did = command.dispatchId;
+                if (!did) return;
+                const entry = pendingDispatches[did];
+                if (!entry || entry.kind !== 'glpiAgentInstall') return;
+                const run = runs[entry.runId];
+                if (!run) return;
+                const r = run.results[entry.nodeId] || (run.results[entry.nodeId] = { status: 'running', time: Date.now() });
+                r.status = command.ok ? 'done' : 'error';
+                r.ok = !!command.ok;
+                r.result = command.result || '';
+                r.exitCode = command.exitCode;
+                r.error = command.error || undefined;
+                r.logTail = command.logTail || '';
+                r.time = Date.now();
+                delete pendingDispatches[did];
+                saveHistory(__dir);
+                return;
+            }
             if (command.pluginaction === 'eventListResult') {
                 const did = command.dispatchId;
                 if (!did) return;
@@ -823,6 +846,31 @@ module.exports.maintctl = function (parent) {
                 fs.createReadStream(bin).pipe(res);
             } catch (e) { res.status(500).send(e.message); }
         });
+        app.get('/maintctl-download/glpiagent/:token', (req, res) => {
+            try {
+                const token = String(req.params.token || '');
+                const entry = consumeDownloadToken(token);
+                if (!entry || entry.kind !== 'glpiagent') {
+                    return res.status(403).set('Content-Type', 'text/plain').send('forbidden');
+                }
+                // Cherche le MSI dans bin/, prend le premier qui matche GLPI-Agent*.msi
+                const binDir = path.join(__dirname, 'bin');
+                let msiFile = null;
+                try {
+                    const found = fs.readdirSync(binDir).filter((f) => /^GLPI-Agent.*\.msi$/i.test(f));
+                    if (found.length) msiFile = path.join(binDir, found[0]);
+                } catch (_) {}
+                if (!msiFile || !fs.existsSync(msiFile)) {
+                    console.log('maintctl: GLPI-Agent MSI absent dans ' + binDir);
+                    return res.status(404).set('Content-Type', 'text/plain').send('GLPI-Agent*.msi non déployé sur le serveur (déposer dans bin/)');
+                }
+                const stat = fs.statSync(msiFile);
+                res.set('Content-Type', 'application/octet-stream');
+                res.set('Content-Length', stat.size);
+                res.set('Content-Disposition', 'attachment; filename="' + path.basename(msiFile) + '"');
+                fs.createReadStream(msiFile).pipe(res);
+            } catch (e) { res.status(500).send(e.message); }
+        });
         app.get('/maintctl-download/driver/:token', (req, res) => {
             try {
                 const token = String(req.params.token || '');
@@ -991,6 +1039,66 @@ module.exports.maintctl = function (parent) {
                 });
             });
             return;
+        }
+
+        if (action === 'glpiAgentDeploy') {
+            const cfg = loadGlpiConfig();
+            if (!cfg) return sendJson(res, 400, { error: 'GLPI non configuré (clé glpi.url dans maintctl-config.json)' });
+            let body = {};
+            try { body = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const nodes = Array.isArray(body.nodes) ? body.nodes.filter((n) => typeof n === 'string') : [];
+            const tag = body.tag || (cfg.tag || '');
+            if (!nodes.length) return sendJson(res, 400, { error: 'aucun poste sélectionné' });
+            // Vérifie que le MSI est dispo côté serveur
+            const binDir = path.join(__dir, 'bin');
+            let msiPresent = false;
+            try {
+                msiPresent = fs.readdirSync(binDir).some((f) => /^GLPI-Agent.*\.msi$/i.test(f));
+            } catch (_) {}
+            if (!msiPresent) {
+                return sendJson(res, 400, { error: 'GLPI-Agent*.msi non déployé sur le serveur. Télécharger depuis https://github.com/glpi-project/glpi-agent/releases et placer dans ' + binDir });
+            }
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const runId = crypto.randomBytes(8).toString('hex');
+            const run = {
+                id: runId,
+                kind: 'glpiAgent',
+                timestamp: Date.now(),
+                user: (user && (user.name || user._id)) || 'unknown',
+                glpiServer: cfg.url,
+                tag: tag,
+                nodes: nodes.map((id) => ({ id: id })),
+                results: {},
+            };
+            runs[runId] = run;
+            const dispatched = [], offline = [];
+            nodes.forEach((nid) => {
+                const ws = wsagents[nid];
+                if (!ws || typeof ws.send !== 'function') {
+                    run.results[nid] = { status: 'offline', time: Date.now() };
+                    offline.push(nid);
+                    return;
+                }
+                const did = crypto.randomBytes(16).toString('hex');
+                pendingDispatches[did] = { kind: 'glpiAgentInstall', runId: runId, nodeId: nid, expires: Date.now() + RUN_TTL_MS };
+                const msiUrl = serverState.baseUrl + '/maintctl-download/glpiagent/' + newDownloadToken('glpiagent');
+                try {
+                    ws.send(JSON.stringify({
+                        action: 'plugin', plugin: 'maintctl', pluginaction: 'glpiAgentInstall',
+                        dispatchId: did,
+                        msiUrl: msiUrl,
+                        glpiServer: cfg.url,
+                        tag: tag,
+                    }));
+                    run.results[nid] = { status: 'running', time: Date.now() };
+                    dispatched.push(nid);
+                } catch (e) {
+                    run.results[nid] = { status: 'error', error: String(e), time: Date.now() };
+                }
+            });
+            saveHistory(__dir);
+            return sendJson(res, 200, { runId: runId, dispatched: dispatched.length, offline: offline.length });
         }
 
         if (action === 'glpiSync') {

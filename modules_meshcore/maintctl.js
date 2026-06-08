@@ -62,6 +62,9 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'eventList':
                 doEventList(args);
                 return 'eventList started';
+            case 'glpiAgentInstall':
+                doGlpiAgentInstall(args);
+                return 'glpiAgentInstall started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -985,6 +988,100 @@ function doEventList(data) {
             error: err || undefined,
             eventsJson: raw,
             logTail: (!ok || err) ? (log || '').slice(-1000) : ''
+        });
+    });
+}
+
+// Installe GLPI Agent silencieusement via MSI.
+// Si déjà installé : déclenche juste un inventaire (--force).
+function buildPsGlpiAgent(msiPath, serverUrl, tag, runNow) {
+    var msiE = msiPath.replace(/'/g, "''");
+    var srvE = serverUrl.replace(/'/g, "''");
+    var tagE = (tag || '').replace(/'/g, "''");
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + 'try {'
+        + '  $exe = "C:\\Program Files\\GLPI-Agent\\perl\\bin\\glpi-agent.bat";'
+        + '  $exe2 = "C:\\Program Files\\GLPI-Agent\\glpi-agent.bat";'
+        + '  $existing = (Test-Path $exe) -or (Test-Path $exe2);'
+        + '  if ($existing) {'
+        + '    Write-Host "GLPI-Agent déjà installé";'
+        + '    $runExe = if (Test-Path $exe) { $exe } else { $exe2 };'
+        + '    & $runExe --force | Out-String | Write-Host;'
+        + '    Write-Host "MAINTCTL_RESULT:already_installed_inventory_triggered";'
+        + '    Write-Host "MAINTCTL_EXIT:0";'
+        + '    exit 0;'
+        + '  }'
+        + '  if (-not (Test-Path \'' + msiE + '\')) { throw "MSI introuvable: ' + msiE + '" }'
+        + '  $msiArgs = @("/i", \'' + msiE + '\', "/qn", "/norestart",'
+        + '    "SERVER=\'' + srvE + '\'",'
+        + (tag ? '    "TAG=\'' + tagE + '\'",' : '')
+        + '    "RUNNOW=' + (runNow ? '1' : '0') + '",'
+        + '    "ADDLOCAL=feat_INVENTORY,feat_NETWORK_INVENTORY,feat_REMOTEINVENTORY,feat_DEPLOY,feat_COLLECT,feat_ESX,feat_WAKEONLAN");'
+        + '  Write-Host ("msiexec " + ($msiArgs -join " "));'
+        + '  $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru -WindowStyle Hidden;'
+        + '  Write-Host ("MAINTCTL_EXIT:" + [int]$p.ExitCode);'
+        + '  if ($p.ExitCode -eq 0) {'
+        + '    Write-Host "MAINTCTL_RESULT:installed";'
+        + '  } elseif ($p.ExitCode -eq 3010) {'
+        + '    Write-Host "MAINTCTL_RESULT:installed_reboot_required";'
+        + '  } else {'
+        + '    Write-Host ("MAINTCTL_RESULT:msiexec_failed_code_" + $p.ExitCode);'
+        + '  }'
+        + '} catch {'
+        + '  Write-Host ("MAINTCTL_ERR:" + $_.Exception.Message);'
+        + '  Write-Host "MAINTCTL_EXIT:1";'
+        + '  exit 1;'
+        + '}';
+}
+
+function doGlpiAgentInstall(data) {
+    dbg('doGlpiAgentInstall start url=' + (data.msiUrl || '(empty)') + ' server=' + data.glpiServer + ' tag=' + (data.tag || ''));
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'glpiAgentResult', dispatchId: data.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var fs = require('fs');
+    var msiUrl = data.msiUrl || '';
+    var server = data.glpiServer || '';
+    var tag = data.tag || '';
+    if (!msiUrl || !server) {
+        reply({ pluginaction: 'glpiAgentResult', dispatchId: data.dispatchId, ok: false, error: 'msiUrl et glpiServer requis' });
+        return;
+    }
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var msiPath = tmpRoot + '\\maintctl_glpi_agent.msi';
+    try { if (fs.existsSync(msiPath)) fs.unlinkSync(msiPath); } catch (_) {}
+
+    downloadFile(msiUrl, msiPath, function (err) {
+        if (err) {
+            dbg('doGlpiAgentInstall DL err: ' + err.message);
+            reply({ pluginaction: 'glpiAgentResult', dispatchId: data.dispatchId, ok: false, error: 'download MSI: ' + err.message });
+            return;
+        }
+        if (!fs.existsSync(msiPath)) {
+            reply({ pluginaction: 'glpiAgentResult', dispatchId: data.dispatchId, ok: false, error: 'MSI introuvable après download' });
+            return;
+        }
+        dbg('doGlpiAgentInstall MSI downloaded, running msiexec...');
+        var script = buildPsGlpiAgent(msiPath, server, tag, true);
+        runPowerShell(script, 10 * 60 * 1000, function (ok, _bytes, log) {
+            var resultM = (log || '').match(/MAINTCTL_RESULT:(\S+)/);
+            var exitM = (log || '').match(/MAINTCTL_EXIT:(-?\d+)/);
+            var result = resultM ? resultM[1] : 'unknown';
+            var exitCode = exitM ? parseInt(exitM[1], 10) : -1;
+            var success = ok && (exitCode === 0);
+            dbg('doGlpiAgentInstall DONE ok=' + success + ' result=' + result + ' exit=' + exitCode);
+            try { fs.unlinkSync(msiPath); } catch (_) {}
+            reply({
+                pluginaction: 'glpiAgentResult',
+                dispatchId: data.dispatchId,
+                ok: success,
+                result: result,
+                exitCode: exitCode,
+                error: success ? undefined : ('msiexec exit ' + exitCode),
+                logTail: (log || '').slice(-2000),
+            });
         });
     });
 }
