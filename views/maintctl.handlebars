@@ -1601,8 +1601,9 @@ function renderHealth() {
       });
     });
   } else {
-    alertsBox.style.display = 'none';
-    splitBar.style.display = 'none';
+    alertsBox.innerHTML = '<div class="head" style="background:#e6f4ea;border-color:#b6dec0;color:#1f5b30">Aucune alerte active 🟢</div>';
+    alertsBox.style.display = 'block';
+    splitBar.style.display = 'flex';
   }
 
   // Filtre + groupement par salle (mesh)
