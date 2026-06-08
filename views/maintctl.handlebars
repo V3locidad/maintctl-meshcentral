@@ -337,8 +337,6 @@
     <label style="font-size:12px; color:#666">
       <input type="checkbox" id="healthAlertsOnly"> Avec alerte seulement
     </label>
-    <button id="glpiSyncBtn" title="Pousse l'inventaire des postes filtrés vers GLPI (Native Inventory depuis sysinfo MC, sans agent installé)" style="font-size:12px">Sync GLPI (sysinfo MC)</button>
-    <button id="glpiTestBtn" title="Test la connectivité GLPI" style="font-size:11px">Test</button>
     <span style="flex:1"></span>
     <span id="healthLastUpdate" style="font-size:11px; color:#888"></span>
     <span id="healthAutoInfo" style="font-size:11px; color:#888">refresh auto : 5 min</span>
@@ -364,17 +362,6 @@
     <div id="drvHistBody" style="margin-top:8px"></div>
     <div style="text-align:right; margin-top:12px">
       <button id="drvHistCloseBtn">Fermer</button>
-    </div>
-  </div>
-</div>
-
-<!-- Modal résultats synchro GLPI -->
-<div id="glpiModal" class="modalBg" style="display:none">
-  <div class="modal" style="max-width: 900px">
-    <h3 id="glpiTitle">Synchronisation GLPI</h3>
-    <div id="glpiBody" style="margin-top:8px; max-height:60vh; overflow:auto"></div>
-    <div style="text-align:right; margin-top:12px">
-      <button id="glpiCloseBtn">Fermer</button>
     </div>
   </div>
 </div>
@@ -1658,74 +1645,6 @@ function renderHealth() {
 }
 
 document.getElementById('healthRefreshBtn').addEventListener('click', refreshHealth);
-
-// ============================ GLPI ============================
-function glpiSync() {
-  if (!healthData) { alert('Pas de données. Rafraîchis d\'abord.'); return; }
-  var onlineOnly = document.getElementById('healthOnlineOnly').checked;
-  var alertsOnly = document.getElementById('healthAlertsOnly').checked;
-  var filtered = healthData.agents.filter(function (a) {
-    if (onlineOnly && !a.online) return false;
-    if (alertsOnly && !(a.alerts && a.alerts.length)) return false;
-    return true;
-  });
-  if (!filtered.length) { alert('Aucun poste à synchroniser avec les filtres actuels.'); return; }
-  if (!window.confirm('Pousser ' + filtered.length + ' poste(s) vers GLPI ?')) return;
-  var nodes = filtered.map(function (a) { return a.id; });
-  var modal = document.getElementById('glpiModal');
-  var body = document.getElementById('glpiBody');
-  var title = document.getElementById('glpiTitle');
-  title.textContent = 'Synchronisation GLPI (' + nodes.length + ' poste(s))…';
-  body.innerHTML = '<div class="empty">Envoi en cours… (peut prendre quelques secondes par poste)</div>';
-  modal.style.display = 'flex';
-  var payload = JSON.stringify({ nodes: nodes });
-  getJson(BASE + '&action=glpiSync&payload=' + encodeURIComponent(payload)).then(function (r) {
-    if (r.error) { body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(r.error) + '</div>'; return; }
-    var ok = (r.results || []).filter(function (x) { return x.ok; }).length;
-    var ko = (r.results || []).length - ok;
-    title.textContent = 'Synchronisation GLPI : ' + ok + ' OK, ' + ko + ' échec(s)';
-    var rows = (r.results || []).map(function (x) {
-      var st = x.ok ? '<span class="resCell ok">OK</span>'
-                    : '<span class="resCell ko" title="' + escapeHtml(x.error || x.body || '') + '">erreur</span>';
-      var detail = x.error || (x.status ? ('HTTP ' + x.status + ' ' + (x.body || '').slice(0, 100)) : '');
-      return '<tr>'
-        + '<td style="padding:4px 8px">' + escapeHtml(x.name || x.nodeId.slice(0, 12)) + '</td>'
-        + '<td style="padding:4px 8px">' + st + '</td>'
-        + '<td style="padding:4px 8px; font-size:11px; color:#666; word-break:break-all">' + escapeHtml(detail) + '</td>'
-        + '</tr>';
-    }).join('');
-    body.innerHTML = '<div style="font-size:11px; color:#888; margin-bottom:6px">Endpoint : ' + escapeHtml(r.endpoint) + '</div>'
-      + '<table style="width:100%; border-collapse:collapse; font-size:13px">'
-      + '<thead><tr style="background:#f5f5f5; text-align:left">'
-      + '<th style="padding:6px">Poste</th><th style="padding:6px">Statut</th><th style="padding:6px">Détail</th>'
-      + '</tr></thead><tbody>' + rows + '</tbody></table>';
-  }).catch(function (e) {
-    body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(e.message) + '</div>';
-  });
-}
-
-function glpiTest() {
-  var modal = document.getElementById('glpiModal');
-  var body = document.getElementById('glpiBody');
-  document.getElementById('glpiTitle').textContent = 'Test connectivité GLPI';
-  body.innerHTML = '<div class="empty">Envoi…</div>';
-  modal.style.display = 'flex';
-  getJson(BASE + '&action=glpiTest').then(function (r) {
-    body.innerHTML = '<div><b>Endpoint :</b> ' + escapeHtml(r.endpoint || '') + '</div>'
-      + '<div style="margin-top:6px"><b>Statut HTTP :</b> ' + (r.status || '—') + '</div>'
-      + '<div style="margin-top:6px"><b>OK :</b> ' + (r.ok ? 'oui' : 'non') + '</div>'
-      + (r.error ? '<div style="margin-top:6px; color:#c9302c"><b>Erreur :</b> ' + escapeHtml(r.error) + '</div>' : '')
-      + '<div style="margin-top:6px"><b>Réponse :</b><pre style="background:#f4f4f4; padding:6px; border-radius:3px; max-height:300px; overflow:auto; font-size:11px">' + escapeHtml(r.body || '') + '</pre></div>';
-  }).catch(function (e) {
-    body.innerHTML = '<div class="empty">⚠ ' + escapeHtml(e.message) + '</div>';
-  });
-}
-
-document.getElementById('glpiSyncBtn').addEventListener('click', glpiSync);
-document.getElementById('glpiTestBtn').addEventListener('click', glpiTest);
-document.getElementById('glpiCloseBtn').addEventListener('click', function () {
-  document.getElementById('glpiModal').style.display = 'none';
-});
 document.getElementById('healthOnlineOnly').addEventListener('change', renderHealth);
 document.getElementById('healthAlertsOnly').addEventListener('change', renderHealth);
 
