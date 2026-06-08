@@ -111,9 +111,9 @@
   .healthBar .stat b { color: #222; font-size: 15px; margin-right: 4px; }
   .healthBar .stat.crit b { color: #c9302c; }
   .healthBar .stat.warn b { color: #d58512; }
-  .healthAlerts { border: 1px solid #f5c6cb; background: #fff; border-radius: 4px; margin-bottom: 6px; overflow: hidden; display: flex; flex-direction: column; }
-  .healthAlerts .head { padding: 6px 12px; background: #fdf5f5; border-bottom: 1px solid #f5c6cb; font-size: 12px; font-weight: 600; color: #721c24; display: flex; align-items: center; gap: 8px; }
-  .healthAlerts .body { overflow: auto; flex: 1; }
+  .healthAlerts { border: 1px solid #f5c6cb; background: #fff; border-radius: 4px; margin-bottom: 6px; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+  .healthAlerts .head { padding: 6px 12px; background: #fdf5f5; border-bottom: 1px solid #f5c6cb; font-size: 12px; font-weight: 600; color: #721c24; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .healthAlerts .body { overflow: auto; flex: 1 1 auto; min-height: 0; }
   .healthAlerts table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .healthAlerts th { text-align: left; padding: 5px 10px; background: #fafafa; font-weight: 600; color: #555; border-bottom: 1px solid #eee; position: sticky; top: 0; z-index: 1; }
   .healthAlerts td { padding: 5px 10px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
@@ -1586,8 +1586,8 @@ function renderHealth() {
       + '<div class="body"><table>'
       + '<thead><tr><th></th><th>Poste</th><th>Salle</th><th>Détail</th></tr></thead>'
       + '<tbody>' + rows + '</tbody></table></div>';
-    alertsBox.style.display = '';
-    splitBar.style.display = '';
+    alertsBox.style.display = 'flex';
+    splitBar.style.display = 'flex';
     // Click sur une ligne → scroll/highlight la carte du poste dans la grille
     Array.prototype.forEach.call(alertsBox.querySelectorAll('tbody tr'), function (tr) {
       tr.addEventListener('click', function () {
