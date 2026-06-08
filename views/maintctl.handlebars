@@ -111,13 +111,23 @@
   .healthBar .stat b { color: #222; font-size: 15px; margin-right: 4px; }
   .healthBar .stat.crit b { color: #c9302c; }
   .healthBar .stat.warn b { color: #d58512; }
-  .healthAlerts { border: 1px solid #f5c6cb; background: #fdf5f5; border-radius: 4px; padding: 8px 12px; margin-bottom: 10px; max-height: 200px; overflow: auto; }
-  .healthAlerts .item { padding: 4px 0; font-size: 12px; border-bottom: 1px solid #fde0e3; display: flex; gap: 8px; align-items: center; }
-  .healthAlerts .item:last-child { border-bottom: none; }
-  .healthAlerts .item .lvl { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; }
-  .healthAlerts .item .lvl.critical { background: #d9534f; }
-  .healthAlerts .item .lvl.warning  { background: #f0ad4e; }
-  .healthAlerts .item .pcName { font-weight: 600; min-width: 130px; }
+  .healthAlerts { border: 1px solid #f5c6cb; background: #fff; border-radius: 4px; margin-bottom: 6px; overflow: hidden; display: flex; flex-direction: column; }
+  .healthAlerts .head { padding: 6px 12px; background: #fdf5f5; border-bottom: 1px solid #f5c6cb; font-size: 12px; font-weight: 600; color: #721c24; display: flex; align-items: center; gap: 8px; }
+  .healthAlerts .body { overflow: auto; flex: 1; }
+  .healthAlerts table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .healthAlerts th { text-align: left; padding: 5px 10px; background: #fafafa; font-weight: 600; color: #555; border-bottom: 1px solid #eee; position: sticky; top: 0; z-index: 1; }
+  .healthAlerts td { padding: 5px 10px; border-bottom: 1px solid #f5f5f5; vertical-align: middle; }
+  .healthAlerts tr:last-child td { border-bottom: none; }
+  .healthAlerts tr:hover td { background: #fafbfc; cursor: pointer; }
+  .healthAlerts .lvl { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+  .healthAlerts .lvl.critical { background: #d9534f; }
+  .healthAlerts .lvl.warning  { background: #f0ad4e; }
+  .healthAlerts .pcName { font-weight: 600; color: #222; }
+  .healthAlerts .salle { color: #888; font-size: 11px; }
+  .healthAlerts .msg { color: #444; }
+  .splitDrag { height: 6px; cursor: row-resize; background: transparent; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; margin-bottom: 6px; }
+  .splitDrag::before { content: ''; display: block; width: 60px; height: 3px; background: #ccc; border-radius: 2px; }
+  .splitDrag:hover::before { background: #2c7be5; }
   .salleGroup { margin-bottom: 16px; }
   .salleGroup h4 { margin: 0 0 6px 0; font-size: 13px; color: #444; padding: 4px 8px; background: #eef1f4; border-radius: 3px; display: flex; align-items: center; gap: 8px; }
   .salleGroup h4 .count { color: #888; font-weight: normal; font-size: 12px; }
@@ -350,7 +360,8 @@
     <span id="healthThresholds" style="font-size:11px; color:#888"></span>
   </div>
 
-  <div id="healthAlertsList" class="healthAlerts" style="display:none"></div>
+  <div id="healthAlertsList" class="healthAlerts" style="display:none; height:180px"></div>
+  <div id="healthSplit" class="splitDrag" style="display:none" title="Glisser pour redimensionner"></div>
 
   <div id="healthGroups"><div class="empty">Chargement…</div></div>
 </div>
@@ -1554,18 +1565,44 @@ function renderHealth() {
     return (a.name || '').localeCompare(b.name || '', 'fr', { numeric: true });
   });
   var alertsBox = document.getElementById('healthAlertsList');
+  var splitBar = document.getElementById('healthSplit');
   if (alertItems.length) {
-    alertsBox.innerHTML = alertItems.map(function (i) {
-      return '<div class="item">'
-        + '<span class="lvl ' + i.level + '"></span>'
-        + '<span class="pcName">' + escapeHtml(i.name) + '</span>'
-        + '<span style="color:#888">' + escapeHtml(i.mesh || '') + '</span>'
-        + '<span>' + escapeHtml(i.message) + '</span>'
-        + '</div>';
+    var nCrit = alertItems.filter(function (i) { return i.level === 'critical'; }).length;
+    var nWarn = alertItems.filter(function (i) { return i.level === 'warning'; }).length;
+    var headTxt = 'Alertes actives — '
+      + (nCrit ? nCrit + ' critique' + (nCrit > 1 ? 's' : '') : '')
+      + (nCrit && nWarn ? ' · ' : '')
+      + (nWarn ? nWarn + ' warning' + (nWarn > 1 ? 's' : '') : '');
+    var rows = alertItems.map(function (i) {
+      return '<tr data-id="' + escapeHtml(i.id) + '">'
+        + '<td style="width:14px"><span class="lvl ' + i.level + '" title="' + i.level + '"></span></td>'
+        + '<td class="pcName">' + escapeHtml(i.name) + '</td>'
+        + '<td class="salle">' + escapeHtml(i.mesh || '—') + '</td>'
+        + '<td class="msg">' + escapeHtml(i.message) + '</td>'
+        + '</tr>';
     }).join('');
+    alertsBox.innerHTML =
+      '<div class="head">' + escapeHtml(headTxt) + '</div>'
+      + '<div class="body"><table>'
+      + '<thead><tr><th></th><th>Poste</th><th>Salle</th><th>Détail</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div>';
     alertsBox.style.display = '';
+    splitBar.style.display = '';
+    // Click sur une ligne → scroll/highlight la carte du poste dans la grille
+    Array.prototype.forEach.call(alertsBox.querySelectorAll('tbody tr'), function (tr) {
+      tr.addEventListener('click', function () {
+        var pcId = tr.getAttribute('data-id');
+        var card = document.querySelector('.pcCard[data-id="' + pcId + '"]');
+        if (card) {
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          card.style.outline = '2px solid #2c7be5';
+          setTimeout(function () { card.style.outline = ''; }, 1500);
+        }
+      });
+    });
   } else {
     alertsBox.style.display = 'none';
+    splitBar.style.display = 'none';
   }
 
   // Filtre + groupement par salle (mesh)
@@ -1646,6 +1683,38 @@ function renderHealth() {
 
 document.getElementById('healthRefreshBtn').addEventListener('click', refreshHealth);
 document.getElementById('healthOnlineOnly').addEventListener('change', renderHealth);
+
+// Drag handle pour redimensionner le panneau d'alertes
+(function setupHealthSplit() {
+  var split = document.getElementById('healthSplit');
+  var box = document.getElementById('healthAlertsList');
+  if (!split || !box) return;
+  try {
+    var saved = parseInt(localStorage.getItem('maintctl_healthAlertsHeight'), 10);
+    if (saved && saved > 60 && saved < 800) box.style.height = saved + 'px';
+  } catch (_) {}
+  var dragging = false, startY = 0, startH = 0;
+  split.addEventListener('mousedown', function (e) {
+    dragging = true;
+    startY = e.clientY;
+    startH = box.getBoundingClientRect().height;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    var h = Math.max(60, Math.min(800, startH + (e.clientY - startY)));
+    box.style.height = h + 'px';
+  });
+  document.addEventListener('mouseup', function () {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+    try { localStorage.setItem('maintctl_healthAlertsHeight', String(parseInt(box.style.height, 10))); } catch (_) {}
+  });
+})();
 document.getElementById('healthAlertsOnly').addEventListener('change', renderHealth);
 
 document.querySelector('.tab[data-tab="health"]').addEventListener('click', function () {
