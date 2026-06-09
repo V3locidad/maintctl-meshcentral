@@ -40,6 +40,21 @@ const devPendingWaiters = {};      // dispatchId -> { res, expires }
 const devDetailsWaiters = {};      // dispatchId -> { res, expires }
 const devActionWaiters = {};       // dispatchId -> { res, expires }
 
+// Registre (ex-regctl) : dispatch + long-polling.
+//   regPending[id] = true tant qu'on attend l'agent
+//   regWaiters[id] = liste de { res, timer } pour long-poll
+//   regResults[id] = résultat stocké si arrivé avant le poll
+const regPending = {};
+const regWaiters = {};
+const regResults = {};
+const REG_RESULT_TTL_MS = 60 * 1000;
+setInterval(function () {
+    const now = Date.now();
+    Object.keys(regResults).forEach((k) => {
+        if (now - regResults[k].time > REG_RESULT_TTL_MS) delete regResults[k];
+    });
+}, 60 * 1000);
+
 const AGENT_TYPE = {
     1: 'Windows', 2: 'Windows', 3: 'Windows', 4: 'Windows', 5: 'Windows',
     6: 'Linux', 9: 'Linux', 13: 'Linux', 25: 'Linux',
@@ -415,6 +430,32 @@ module.exports.maintctl = function (parent) {
         try {
             if (!command) return;
             if (command.pluginaction === 'pong') return;
+
+            if (command.pluginaction === 'regResult') {
+                const id = command.dispatchId;
+                if (!id) return;
+                const payload = {
+                    ok: !!command.ok,
+                    data: command.data,
+                    error: command.error,
+                    time: Date.now(),
+                };
+                delete regPending[id];
+                const arr = regWaiters[id] || [];
+                delete regWaiters[id];
+                if (arr.length) {
+                    arr.forEach((w) => {
+                        try { clearTimeout(w.timer); } catch (e) {}
+                        try {
+                            w.res.setHeader('Content-Type', 'application/json');
+                            w.res.end(JSON.stringify({ ready: true, result: payload }));
+                        } catch (e) {}
+                    });
+                } else {
+                    regResults[id] = payload;
+                }
+                return;
+            }
 
             if (command.pluginaction === 'devDetailsResult') {
                 const did = command.dispatchId;
@@ -1244,6 +1285,88 @@ module.exports.maintctl = function (parent) {
                     w.res.end(JSON.stringify({ ok: false, error: 'agent timeout (180s) — agent peut-être sur ancienne version (restart MeshAgent ?)' }));
                 } catch (_) {}
             }, 180 * 1000);
+            return;
+        }
+
+        // ---- Registre (ex-regctl, intégré) ----
+
+        if (action === 'regTemplates') {
+            try {
+                const tplPath = path.join(__dirname, 'regkey-templates.json');
+                const raw = fs.readFileSync(tplPath, 'utf8');
+                return sendJson(res, 200, JSON.parse(raw));
+            } catch (e) {
+                return sendJson(res, 500, { error: 'regkey-templates.json invalide: ' + e.message });
+            }
+        }
+
+        const regOpMap = {
+            regEnumKeys:    { needs: ['nodeId', 'path'] },
+            regEnumValues:  { needs: ['nodeId', 'path'] },
+            regReadValue:   { needs: ['nodeId', 'path', 'name'] },
+            regWriteValue:  { needs: ['nodeId', 'path', 'name', 'type', 'data'] },
+            regDeleteValue: { needs: ['nodeId', 'path', 'name'] },
+            regDeleteKey:   { needs: ['nodeId', 'path'] },
+            regCreateKey:   { needs: ['nodeId', 'path'] },
+        };
+
+        if (regOpMap[action]) {
+            let payload = {};
+            try { payload = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const op = regOpMap[action];
+            for (let i = 0; i < op.needs.length; i++) {
+                const k = op.needs[i];
+                if (payload[k] === undefined || payload[k] === null || payload[k] === '') {
+                    // name peut légitimement être '' (valeur par défaut)
+                    if (k === 'name') continue;
+                    return sendJson(res, 400, { error: 'paramètre manquant: ' + k });
+                }
+            }
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const ws = wsagents[payload.nodeId];
+            if (!ws || typeof ws.send !== 'function') {
+                return sendJson(res, 200, { ok: false, error: 'agent déconnecté' });
+            }
+            const dispatchId = crypto.randomBytes(12).toString('hex');
+            regPending[dispatchId] = true;
+            const message = Object.assign({
+                action: 'plugin', plugin: 'maintctl',
+                pluginaction: action,
+                dispatchId: dispatchId,
+            }, payload);
+            try {
+                ws.send(JSON.stringify(message));
+                return sendJson(res, 200, { ok: true, dispatchId: dispatchId });
+            } catch (e) {
+                delete regPending[dispatchId];
+                return sendJson(res, 200, { ok: false, error: e.message });
+            }
+        }
+
+        if (action === 'regPollResult') {
+            const id = String((req.query && req.query.dispatchId) || '');
+            if (!id) return sendJson(res, 400, { error: 'dispatchId requis' });
+            if (regResults[id]) {
+                const r = regResults[id];
+                delete regResults[id];
+                return sendJson(res, 200, { ready: true, result: r });
+            }
+            if (!regPending[id]) {
+                return sendJson(res, 200, { ready: false, unknown: true });
+            }
+            if (!regWaiters[id]) regWaiters[id] = [];
+            const waiter = { res: res, timer: null };
+            regWaiters[id].push(waiter);
+            waiter.timer = setTimeout(() => {
+                const arr = regWaiters[id] || [];
+                const i = arr.indexOf(waiter);
+                if (i !== -1) arr.splice(i, 1);
+                try {
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(JSON.stringify({ ready: false }));
+                } catch (e) {}
+            }, 25000);
             return;
         }
 

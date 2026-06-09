@@ -170,6 +170,63 @@
   .catBadge.service { background: #5bc0de; color: #fff; }
   .catBadge.network { background: #2c7be5; color: #fff; }
   .catBadge.security { background: #5cb85c; color: #fff; }
+  /* --- Registre --- */
+  #panel-registry { font-size: 13px; }
+  #panel-registry .regMain { display: flex; flex: 1 1 auto; min-height: 0; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+  #panel-registry .regPane { overflow: auto; }
+  #panel-registry #regAgents { width: 240px; border-right: 1px solid #ddd; display: flex; flex-direction: column; background: #fafafa; }
+  #panel-registry #regAgentsBar { padding: 6px; border-bottom: 1px solid #eee; display: flex; gap: 4px; align-items: center; flex: 0 0 auto; }
+  #panel-registry #regAgentsBar input { flex: 1; padding: 3px 6px; border: 1px solid #bbb; border-radius: 3px; font-size: 12px; }
+  #panel-registry #regAgentsList { overflow: auto; flex: 1; }
+  #panel-registry #regAgentsFoot { padding: 5px 8px; border-top: 1px solid #eee; font-size: 11px; color: #666; flex: 0 0 auto; }
+  #panel-registry .regAg { padding: 4px 8px; border-bottom: 1px solid #f3f3f3; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #panel-registry .regAg:hover { background: #eef4fb; }
+  #panel-registry .regAg.active { background: #d6e9ff; }
+  #panel-registry .regAg .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
+  #panel-registry .regAg .dot.on { background: #2bb673; }
+  #panel-registry .regAg .dot.off { background: #cd3a3a; }
+  #panel-registry .regAg .name { flex: 1; font-size: 12px; }
+  #panel-registry .regAg .mesh { color: #888; font-size: 10px; }
+  #panel-registry #regTree { width: 34%; border-right: 1px solid #ddd; background: #fff; }
+  #panel-registry #regValues { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #panel-registry #regToolbar { padding: 6px 8px; border-bottom: 1px solid #eee; background: #f7f7f7; display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
+  #panel-registry #regToolbar .path { flex: 1; padding: 2px 6px; background: #fff; border: 1px solid #ddd; border-radius: 3px; font-family: Menlo, Consolas, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #panel-registry #regValuesBody { padding: 6px; overflow: auto; flex: 1; }
+  #panel-registry .regNode { padding: 1px 4px 1px 0; cursor: pointer; white-space: nowrap; font-family: Menlo, Consolas, monospace; font-size: 12px; }
+  #panel-registry .regNode .twist { display: inline-block; width: 12px; color: #888; }
+  #panel-registry .regNode.selected > .label { background: #d6e9ff; }
+  #panel-registry .regNode .label:hover { background: #eef4fb; }
+  #panel-registry .regChildren { padding-left: 14px; }
+  #panel-registry .regErr { color: #b00; font-size: 11px; padding: 4px; white-space: pre-wrap; }
+  #panel-registry .regTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #panel-registry .regTable th, #panel-registry .regTable td { padding: 4px 6px; border-bottom: 1px solid #f0f0f0; text-align: left; vertical-align: top; }
+  #panel-registry .regTable th { background: #f4f4f4; position: sticky; top: 0; font-weight: 600; }
+  #panel-registry .regTable td.data { font-family: Menlo, Consolas, monospace; word-break: break-all; max-width: 360px; }
+  #panel-registry .regBadge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; background: #e2e3e5; color: #383d41; }
+  #panel-registry .regBatchTag { background: #fff3cd; color: #856404; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  #panel-registry .regDanger { background: #fbe9e7; color: #8a2a17; border: 1px solid #f5c2b8; padding: 3px 8px; border-radius: 3px; cursor: pointer; }
+  #panel-registry button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  #panel-registry .regEmpty { color: #aaa; font-style: italic; padding: 12px; text-align: center; }
+  #panel-registry #regSpinner { display: none; color: #888; font-size: 11px; }
+  #panel-registry #regSpinner.on { display: inline; }
+  .regModalBg { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 200; }
+  .regModalBg .regModal { background: #fff; padding: 16px 20px; border-radius: 6px; min-width: 460px; max-width: 90%; max-height: 90%; overflow: auto; box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+  .regModalBg .regModal h3 { margin: 0 0 10px 0; font-size: 14px; }
+  .regModalBg .regModal label { display: block; margin: 6px 0 2px; font-size: 12px; color: #555; }
+  .regModalBg .regModal input, .regModalBg .regModal select, .regModalBg .regModal textarea { width: 100%; box-sizing: border-box; padding: 4px 6px; font-size: 12px; font-family: inherit; }
+  .regModalBg .regModal textarea { font-family: Menlo, Consolas, monospace; min-height: 80px; }
+  .regModalBg .regModal .actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+  .regBatchRes { max-height: 220px; overflow: auto; border: 1px solid #eee; padding: 6px; font-family: Menlo, Consolas, monospace; font-size: 11px; margin-top: 8px; }
+  .regBatchRes .ok { color: #2bb673; }
+  .regBatchRes .ko { color: #cd3a3a; }
+  .regQaGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 4px; }
+  .regQaCard { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 2px solid #e5e5e5; border-radius: 6px; cursor: pointer; background: #fff; }
+  .regQaCard:hover { border-color: #999; background: #fafafa; }
+  .regQaSel { padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; border: 1px solid #ddd; }
+  .regTone-green  { background: #e7f7ee; border-color: #b6e2c7; color: #1c6b3e; }
+  .regTone-blue   { background: #e7f0fb; border-color: #b6cfe9; color: #1a4a87; }
+  .regTone-orange { background: #fff4e3; border-color: #f5cfa1; color: #8a5217; }
+  .regTone-red    { background: #fbe9e7; border-color: #f5b6ad; color: #8a2a17; }
 </style>
 </head>
 <body>
@@ -182,6 +239,7 @@
   <div class="tab" data-tab="drivers">Drivers</div>
   <div class="tab" data-tab="events">Événements</div>
   <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
+  <div class="tab" data-tab="registry">Registre</div>
 </div>
 
 <!-- ============ TAB NETTOYAGE ============ -->
@@ -364,6 +422,47 @@
   <div id="healthSplit" class="splitDrag" style="display:none" title="Glisser pour redimensionner"></div>
 
   <div id="healthGroups"><div class="empty">Chargement…</div></div>
+</div>
+
+<!-- ============ TAB REGISTRE ============ -->
+<div id="panel-registry" class="panel">
+  <div class="bar">
+    <button id="regRefreshAgents">Rafraîchir postes</button>
+    <button id="regRefreshTree">Recharger l'arbre</button>
+    <button id="regTemplatesBtn" title="Appliquer un modèle de regkeys prédéfini">Modèles</button>
+    <button id="regQuickBtn" title="Créer/écrire/supprimer à un chemin libre">Action rapide</button>
+    <span id="regSpinner">⟳</span>
+    <span id="regBatchTag" class="regBatchTag" style="display:none"></span>
+    <span style="flex:1"></span>
+    <span style="font-size:11px; color:#888">Multi-poste : coche plusieurs lignes pour batch.</span>
+  </div>
+
+  <div class="regMain">
+    <div id="regAgents" class="regPane">
+      <div id="regAgentsBar">
+        <input id="regAgentFilter" placeholder="Filtrer…">
+        <button id="regAgentSelAll" title="Tout cocher / décocher">⊞</button>
+      </div>
+      <div id="regAgentsList"><div class="regEmpty">Chargement…</div></div>
+      <div id="regAgentsFoot"><span id="regAgentsStats">0 postes</span></div>
+    </div>
+
+    <div id="regTree" class="regPane">
+      <div class="regEmpty">Clique sur un poste pour parcourir son registre.</div>
+    </div>
+
+    <div id="regValues" class="regPane" style="padding:0">
+      <div id="regToolbar">
+        <span class="path" id="regCurPath">—</span>
+        <button id="regNewValBtn" disabled title="Ajouter une valeur">+ Valeur</button>
+        <button id="regNewKeyBtn" disabled title="Créer une sous-clé">+ Sous-clé</button>
+        <button id="regDelKeyBtn" class="regDanger" disabled title="Supprimer la clé">Supprimer clé</button>
+      </div>
+      <div id="regValuesBody">
+        <div class="regEmpty">Sélectionne une clé pour voir ses valeurs.</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Modal historique drivers d'un poste -->
@@ -1891,6 +1990,548 @@ refreshAgents().then(function () {
   restoreCleanRun();
   restoreDrvRun();
 });
+
+// ============================================================
+// Registre (ex-regctl, intégré). Toutes les fns préfixées reg*.
+// ============================================================
+(function () {
+  function $$(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+    });
+  }
+  function setBusy(on) { $$('regSpinner').classList.toggle('on', !!on); }
+
+  function apiReg(action, qs, body) {
+    var url = 'pluginadmin.ashx?pin=maintctl&action=' + encodeURIComponent(action);
+    if (qs) Object.keys(qs).forEach(function (k) {
+      url += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(qs[k]);
+    });
+    if (body) url += '&payload=' + encodeURIComponent(JSON.stringify(body));
+    return fetch(url, { credentials: 'include' }).then(function (r) { return r.json(); });
+  }
+
+  // Dispatch + long-polling. Renvoie une promesse résolue avec result.data.
+  function callAgentReg(action, body) {
+    setBusy(true);
+    return apiReg(action, null, body).then(function (r) {
+      if (!r || !r.ok) { setBusy(false); throw new Error((r && r.error) || 'dispatch KO'); }
+      var dispatchId = r.dispatchId;
+      var tries = 0;
+      return new Promise(function (resolve, reject) {
+        function poll() {
+          tries++;
+          apiReg('regPollResult', { dispatchId: dispatchId }).then(function (p) {
+            if (p.ready) {
+              setBusy(false);
+              if (p.result && p.result.ok) resolve(p.result.data);
+              else reject(new Error((p.result && p.result.error) || 'erreur agent'));
+            } else if (p.unknown || tries > 4) {
+              setBusy(false);
+              reject(new Error(p.unknown ? 'dispatch perdu' : 'timeout'));
+            } else poll();
+          }).catch(function (e) { setBusy(false); reject(e); });
+        }
+        poll();
+      });
+    });
+  }
+
+  // --- Agents ---
+  var regAgents = [];
+  var regActiveNode = null;
+  var regChecked = {};
+
+  function regLoadAgents() {
+    return apiReg('agents').then(function (r) {
+      // n'inclut que les Windows (l'agent registre tourne PS Windows)
+      regAgents = (r.agents || []).filter(function (a) { return (a.family || '').toLowerCase() === 'windows' || /win/i.test(a.os || ''); });
+      regRenderAgents();
+      regUpdateBatchTag();
+    });
+  }
+
+  function regRenderAgents() {
+    var q = ($$('regAgentFilter').value || '').toLowerCase().trim();
+    var filtered = regAgents.filter(function (a) {
+      return !q || (a.name || '').toLowerCase().indexOf(q) !== -1 || (a.mesh || '').toLowerCase().indexOf(q) !== -1;
+    });
+    if (!filtered.length) {
+      $$('regAgentsList').innerHTML = '<div class="regEmpty">Aucun poste.</div>';
+      $$('regAgentsStats').textContent = '0 / ' + regAgents.length;
+      return;
+    }
+    $$('regAgentsList').innerHTML = filtered.map(function (a) {
+      var actCls = (a.id === regActiveNode ? ' active' : '');
+      var checked = regChecked[a.id] ? ' checked' : '';
+      var dot = a.online ? 'on' : 'off';
+      return '<div class="regAg' + actCls + '" data-id="' + esc(a.id) + '">'
+           +   '<input type="checkbox" class="chk"' + checked + (a.online ? '' : ' disabled') + '>'
+           +   '<span class="dot ' + dot + '" title="' + (a.online ? 'En ligne' : 'Hors ligne') + '"></span>'
+           +   '<span class="name">' + esc(a.name) + '</span>'
+           +   '<span class="mesh">' + esc(a.mesh) + '</span>'
+           + '</div>';
+    }).join('');
+    var on = filtered.filter(function (a) { return a.online; }).length;
+    $$('regAgentsStats').textContent = filtered.length + ' / ' + regAgents.length + ' postes · ' + on + ' en ligne';
+    Array.prototype.slice.call(document.querySelectorAll('#regAgentsList .regAg')).forEach(function (row) {
+      var id = row.getAttribute('data-id');
+      var chk = row.querySelector('.chk');
+      chk.onchange = function () {
+        if (chk.checked) regChecked[id] = true; else delete regChecked[id];
+        regUpdateBatchTag();
+      };
+      chk.onclick = function (ev) { ev.stopPropagation(); };
+      row.onclick = function () {
+        var a = regAgents.find(function (x) { return x.id === id; });
+        if (!a || !a.online) return;
+        regActiveNode = id;
+        regRenderAgents();
+        regResetBrowser();
+        regRenderRoots();
+      };
+    });
+  }
+
+  function regUpdateBatchTag() {
+    var n = Object.keys(regChecked).length;
+    var tag = $$('regBatchTag');
+    if (n <= 1) { tag.style.display = 'none'; return; }
+    tag.style.display = '';
+    tag.textContent = 'Batch : ' + n + ' postes cochés';
+  }
+
+  // --- Tree ---
+  var REG_ROOTS = ['HKLM', 'HKCU', 'HKCR', 'HKU', 'HKCC'];
+  var regSelPath = null;
+  var regSelNode = null;
+
+  function regResetBrowser() {
+    regSelPath = null; regSelNode = null;
+    $$('regCurPath').textContent = '—';
+    $$('regValuesBody').innerHTML = '<div class="regEmpty">Sélectionne une clé pour voir ses valeurs.</div>';
+    $$('regNewValBtn').disabled = $$('regNewKeyBtn').disabled = $$('regDelKeyBtn').disabled = true;
+  }
+
+  function regNodeHtml(p, label, hasChildren) {
+    return '<div class="regNode" data-path="' + esc(p) + '">'
+         +   '<span class="label">'
+         +     '<span class="twist">' + (hasChildren ? '▸' : ' ') + '</span>'
+         +     esc(label)
+         +   '</span>'
+         +   '<div class="regChildren"></div>'
+         + '</div>';
+  }
+
+  function regRenderRoots() {
+    $$('regTree').innerHTML = REG_ROOTS.map(function (r) { return regNodeHtml(r, r, true); }).join('');
+    regBindTree();
+  }
+
+  function regBindTree() {
+    Array.prototype.slice.call(document.querySelectorAll('#regTree .regNode > .label')).forEach(function (lab) {
+      if (lab._regBound) return; lab._regBound = true;
+      lab.onclick = function (ev) {
+        ev.stopPropagation();
+        var node = lab.parentNode;
+        var p = node.getAttribute('data-path');
+        regSelectKey(p, node);
+        regToggleNode(node);
+      };
+    });
+  }
+
+  function regToggleNode(node) {
+    var p = node.getAttribute('data-path');
+    var children = node.querySelector('.regChildren');
+    var twist = node.querySelector('.twist');
+    if (children.dataset.loaded === 'open') {
+      children.dataset.loaded = 'closed'; children.style.display = 'none'; twist.textContent = '▸'; return;
+    }
+    if (children.dataset.loaded === 'closed') {
+      children.style.display = ''; children.dataset.loaded = 'open'; twist.textContent = '▾'; return;
+    }
+    twist.textContent = '⋯';
+    callAgentReg('regEnumKeys', { nodeId: regActiveNode, path: p }).then(function (data) {
+      var keys = (data && data.keys) || [];
+      children.innerHTML = keys.map(function (k) { return regNodeHtml(p + '\\' + k, k, true); }).join('') ||
+                            '<div style="color:#aaa;padding-left:14px;font-style:italic;font-size:11px">(vide)</div>';
+      children.dataset.loaded = 'open'; children.style.display = ''; twist.textContent = keys.length ? '▾' : '·';
+      regBindTree();
+    }).catch(function (e) {
+      children.innerHTML = '<div class="regErr">' + esc(e.message) + '</div>';
+      children.dataset.loaded = 'open'; children.style.display = ''; twist.textContent = '!';
+    });
+  }
+
+  function regSelectKey(p, nodeEl) {
+    regSelPath = p;
+    if (regSelNode) regSelNode.classList.remove('selected');
+    regSelNode = nodeEl;
+    if (nodeEl) nodeEl.classList.add('selected');
+    $$('regCurPath').textContent = p;
+    $$('regNewValBtn').disabled = false;
+    $$('regNewKeyBtn').disabled = false;
+    $$('regDelKeyBtn').disabled = (REG_ROOTS.indexOf(p) !== -1);
+    regLoadValues(p);
+  }
+
+  function regLoadValues(p) {
+    $$('regValuesBody').innerHTML = '<div class="regEmpty">Chargement…</div>';
+    callAgentReg('regEnumValues', { nodeId: regActiveNode, path: p }).then(function (data) {
+      var vals = (data && data.values) || [];
+      if (!vals.length) { $$('regValuesBody').innerHTML = '<div class="regEmpty">Aucune valeur.</div>'; return; }
+      var rows = vals.map(function (v) {
+        var dataStr = (v.type === 'MultiString' && Array.isArray(v.data)) ? v.data.join(' | ') : String(v.data == null ? '' : v.data);
+        return '<tr data-name="' + esc(v.name) + '">'
+             +   '<td>' + (v.name || '<i>(Par défaut)</i>') + '</td>'
+             +   '<td><span class="regBadge">' + esc(v.type) + '</span></td>'
+             +   '<td class="data">' + esc(dataStr.slice(0, 200)) + (dataStr.length > 200 ? '…' : '') + '</td>'
+             +   '<td style="white-space:nowrap">'
+             +     '<button data-act="edit" data-name="' + esc(v.name) + '">Éditer</button> '
+             +     '<button class="regDanger" data-act="del" data-name="' + esc(v.name) + '">×</button>'
+             +   '</td></tr>';
+      }).join('');
+      $$('regValuesBody').innerHTML = '<table class="regTable"><thead><tr><th>Nom</th><th>Type</th><th>Valeur</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
+      Array.prototype.slice.call($$('regValuesBody').querySelectorAll('button[data-act]')).forEach(function (b) {
+        b.onclick = function (ev) {
+          ev.stopPropagation();
+          var act = b.getAttribute('data-act');
+          var nm = b.getAttribute('data-name');
+          if (act === 'edit') regEditValue(nm, vals.find(function (x) { return x.name === nm; }));
+          else if (act === 'del') regDeleteValue(nm);
+        };
+      });
+    }).catch(function (e) {
+      $$('regValuesBody').innerHTML = '<div class="regErr">' + esc(e.message) + '</div>';
+    });
+  }
+
+  function regTargetNodes() {
+    var ids = Object.keys(regChecked);
+    if (!ids.length && regActiveNode) ids = [regActiveNode];
+    return ids;
+  }
+
+  // --- Modale ---
+  function regShowModal(html) {
+    var bg = document.createElement('div'); bg.className = 'regModalBg';
+    bg.innerHTML = '<div class="regModal">' + html + '</div>';
+    document.body.appendChild(bg);
+    bg.onclick = function (e) { if (e.target === bg) document.body.removeChild(bg); };
+    return bg;
+  }
+  function regCloseModal(bg) { try { document.body.removeChild(bg); } catch (e) {} }
+
+  function regBatchDispatch(action, makeBody, label) {
+    var ids = regTargetNodes();
+    if (!ids.length) return alert('Aucun poste cible.');
+    if (ids.length > 1 && !confirm(label + '\nAppliquer sur ' + ids.length + ' postes ?')) return;
+    var bg = regShowModal([
+      '<h3>' + esc(label) + ' — ' + ids.length + ' poste' + (ids.length > 1 ? 's' : '') + '</h3>',
+      '<div id="regBRes" class="regBatchRes"></div>',
+      '<div class="actions"><button id="regBClose" disabled>Fermer</button></div>',
+    ].join(''));
+    var resBox = bg.querySelector('#regBRes');
+    var btnClose = bg.querySelector('#regBClose');
+    btnClose.onclick = function () { regCloseModal(bg); };
+    var nameById = {};
+    regAgents.forEach(function (a) { nameById[a.id] = a.name; });
+    var i = 0, ok = 0, ko = 0;
+    function next() {
+      if (i >= ids.length) {
+        resBox.innerHTML += '\n<div><b>Terminé : ' + ok + ' OK, ' + ko + ' KO</b></div>';
+        btnClose.disabled = false;
+        if (regSelPath) regLoadValues(regSelPath);
+        return;
+      }
+      var id = ids[i++];
+      var body = makeBody(id);
+      resBox.innerHTML += '<div>• ' + esc(nameById[id] || id) + ' … </div>';
+      resBox.scrollTop = resBox.scrollHeight;
+      callAgentReg(action, body).then(function () {
+        ok++; resBox.lastChild.innerHTML += '<span class="ok">OK</span>'; next();
+      }).catch(function (e) {
+        ko++; resBox.lastChild.innerHTML += '<span class="ko">KO — ' + esc(e.message) + '</span>'; next();
+      });
+    }
+    next();
+  }
+
+  var REG_TYPES = ['String', 'ExpandString', 'DWord', 'QWord', 'Binary', 'MultiString'];
+
+  function regEditValue(name, existing) {
+    var isNew = !existing;
+    var v = existing || { name: name || '', type: 'String', data: '' };
+    var typeOpts = REG_TYPES.map(function (t) {
+      return '<option value="' + t + '"' + (t === v.type ? ' selected' : '') + '>' + t + '</option>';
+    }).join('');
+    var dataStr = Array.isArray(v.data) ? v.data.join('\n') : String(v.data == null ? '' : v.data);
+    var nIds = regTargetNodes().length;
+    var bg = regShowModal([
+      '<h3>' + (isNew ? 'Nouvelle valeur' : 'Éditer ' + esc(v.name)) + (nIds > 1 ? ' (' + nIds + ' postes)' : '') + '</h3>',
+      '<label>Nom</label><input id="regEvName" value="' + esc(v.name) + '"' + (isNew ? '' : ' disabled') + '>',
+      '<label>Type</label><select id="regEvType">' + typeOpts + '</select>',
+      '<label id="regEvDataLbl">Donnée</label>',
+      '<textarea id="regEvData">' + esc(dataStr) + '</textarea>',
+      '<div class="actions"><button id="regEvCancel">Annuler</button><button id="regEvSave">Enregistrer</button></div>',
+    ].join(''));
+    function updateHint() {
+      var t = bg.querySelector('#regEvType').value;
+      var lab = bg.querySelector('#regEvDataLbl');
+      if (t === 'DWord' || t === 'QWord') lab.textContent = 'Donnée (entier)';
+      else if (t === 'Binary') lab.textContent = 'Donnée (hexa, ex: DE AD BE EF)';
+      else if (t === 'MultiString') lab.textContent = 'Donnée (une ligne = une entrée)';
+      else lab.textContent = 'Donnée';
+    }
+    bg.querySelector('#regEvType').onchange = updateHint; updateHint();
+    bg.querySelector('#regEvCancel').onclick = function () { regCloseModal(bg); };
+    bg.querySelector('#regEvSave').onclick = function () {
+      var nm = bg.querySelector('#regEvName').value;
+      var tp = bg.querySelector('#regEvType').value;
+      var dt = bg.querySelector('#regEvData').value;
+      regCloseModal(bg);
+      regBatchDispatch('regWriteValue', function (nid) {
+        return { nodeId: nid, path: regSelPath, name: nm, type: tp, data: dt };
+      }, 'Écrire ' + nm);
+    };
+  }
+
+  function regDeleteValue(name) {
+    regBatchDispatch('regDeleteValue', function (nid) {
+      return { nodeId: nid, path: regSelPath, name: name };
+    }, 'Supprimer la valeur ' + name);
+  }
+
+  function regCreateKey() {
+    var sub = prompt('Nom de la sous-clé à créer sous\n' + regSelPath);
+    if (!sub) return;
+    regBatchDispatch('regCreateKey', function (nid) {
+      return { nodeId: nid, path: regSelPath + '\\' + sub };
+    }, 'Créer la clé ' + sub);
+    setTimeout(function () {
+      if (regSelNode && regActiveNode) {
+        var children = regSelNode.querySelector('.regChildren');
+        children.dataset.loaded = ''; children.innerHTML = '';
+        regToggleNode(regSelNode);
+      }
+    }, 800);
+  }
+
+  function regDeleteCurrentKey() {
+    if (!confirm('Supprimer DÉFINITIVEMENT la clé\n\n' + regSelPath + '\n\net tout son contenu ?')) return;
+    regBatchDispatch('regDeleteKey', function (nid) {
+      return { nodeId: nid, path: regSelPath };
+    }, 'Supprimer la clé ' + regSelPath);
+  }
+
+  // --- Quick action ---
+  var REG_QUICK_OPS = [
+    { id: 'regCreateKey',   tone: 'green',  title: 'Créer une clé',           sub: 'Ajoute une clé de registre.' },
+    { id: 'regWriteValue',  tone: 'blue',   title: 'Écrire une valeur',        sub: 'Crée ou modifie une valeur dans une clé.' },
+    { id: 'regDeleteValue', tone: 'orange', title: 'Supprimer une valeur',     sub: 'Retire UNE valeur d\'une clé.' },
+    { id: 'regDeleteKey',   tone: 'red',    title: 'Supprimer une clé',        sub: 'Détruit la clé ET tout son contenu.' },
+  ];
+
+  function regOpenQuick() {
+    var nIds = regTargetNodes().length;
+    if (!nIds) return alert('Coche au moins un poste (ou clique sur un poste actif).');
+    var typeOpts = REG_TYPES.map(function (t) { return '<option>' + t + '</option>'; }).join('');
+    var cards = REG_QUICK_OPS.map(function (o) {
+      return '<div class="regQaCard regTone-' + o.tone + '" data-op="' + o.id + '">'
+           +   '<div><div style="font-weight:600;font-size:13px">' + o.title + '</div>'
+           +   '<div style="font-size:11px;color:#777;margin-top:2px">' + o.sub + '</div></div>'
+           + '</div>';
+    }).join('');
+    var bg = regShowModal([
+      '<h3>Action rapide <span style="font-weight:400;color:#666">— ' + nIds + ' poste' + (nIds > 1 ? 's' : '') + '</span></h3>',
+      '<div class="regQaGrid">' + cards + '</div>',
+      '<div id="regQaForm" style="display:none">',
+      '  <div id="regQaSel" class="regQaSel"></div>',
+      '  <label>Chemin de clé</label><input id="regQaPath" placeholder="ex: HKLM\\Software\\MonAppli">',
+      '  <div id="regQaValBlock"><label>Nom de la valeur</label><input id="regQaName" placeholder="(vide = valeur par défaut)">',
+      '    <div id="regQaTypeBlock"><label>Type</label><select id="regQaType">' + typeOpts + '</select>',
+      '    <label id="regQaDataLbl">Donnée</label><textarea id="regQaData"></textarea></div>',
+      '  </div>',
+      '  <div class="actions"><button id="regQaBack">← Changer d\'action</button><button id="regQaCancel">Annuler</button><button id="regQaRun">Exécuter</button></div>',
+      '</div>',
+      '<div id="regQaCancelOnly" class="actions"><button id="regQaCancel2">Annuler</button></div>',
+    ].join(''));
+    var selectedOp = null;
+    var form = bg.querySelector('#regQaForm');
+    var grid = bg.querySelector('.regQaGrid');
+    var cancelOnly = bg.querySelector('#regQaCancelOnly');
+    var selBox = bg.querySelector('#regQaSel');
+    var qaType = bg.querySelector('#regQaType');
+    var qaLbl = bg.querySelector('#regQaDataLbl');
+    var valBlock = bg.querySelector('#regQaValBlock');
+    var typeBlock = bg.querySelector('#regQaTypeBlock');
+    var runBtn = bg.querySelector('#regQaRun');
+    function updateHint() {
+      var t = qaType.value;
+      if (t === 'DWord' || t === 'QWord') qaLbl.textContent = 'Donnée (entier)';
+      else if (t === 'Binary') qaLbl.textContent = 'Donnée (hexa, ex: DE AD BE EF)';
+      else if (t === 'MultiString') qaLbl.textContent = 'Donnée (une ligne = une entrée)';
+      else qaLbl.textContent = 'Donnée';
+    }
+    qaType.onchange = updateHint;
+    function pickOp(op) {
+      selectedOp = op;
+      grid.style.display = 'none'; cancelOnly.style.display = 'none'; form.style.display = '';
+      selBox.className = 'regQaSel regTone-' + op.tone;
+      selBox.innerHTML = '<b>' + op.title + '</b>';
+      valBlock.style.display = (op.id === 'regCreateKey' || op.id === 'regDeleteKey') ? 'none' : '';
+      typeBlock.style.display = (op.id === 'regWriteValue') ? '' : 'none';
+      runBtn.textContent = op.title;
+      updateHint();
+    }
+    Array.prototype.slice.call(bg.querySelectorAll('.regQaCard')).forEach(function (c) {
+      c.onclick = function () { pickOp(REG_QUICK_OPS.find(function (x) { return x.id === c.getAttribute('data-op'); })); };
+    });
+    bg.querySelector('#regQaBack').onclick = function () { selectedOp = null; form.style.display = 'none'; grid.style.display = ''; cancelOnly.style.display = ''; };
+    bg.querySelector('#regQaCancel').onclick = function () { regCloseModal(bg); };
+    bg.querySelector('#regQaCancel2').onclick = function () { regCloseModal(bg); };
+    runBtn.onclick = function () {
+      if (!selectedOp) return;
+      var act = selectedOp.id;
+      var p = bg.querySelector('#regQaPath').value.trim();
+      if (!p) return alert('Chemin requis.');
+      var nm = bg.querySelector('#regQaName').value;
+      var tp = qaType.value;
+      var dt = bg.querySelector('#regQaData').value;
+      if (act === 'regDeleteKey' && !confirm('Supprimer DÉFINITIVEMENT la clé\n\n' + p + '\n\net tout son contenu sur ' + nIds + ' poste(s) ?')) return;
+      var label = ({
+        regCreateKey: 'Créer ' + p,
+        regDeleteKey: 'Supprimer ' + p,
+        regWriteValue: 'Écrire ' + (nm || '(défaut)') + ' dans ' + p,
+        regDeleteValue: 'Supprimer ' + (nm || '(défaut)') + ' de ' + p,
+      })[act];
+      regCloseModal(bg);
+      regBatchDispatch(act, function (nid) {
+        var body = { nodeId: nid, path: p };
+        if (act === 'regWriteValue') { body.name = nm; body.type = tp; body.data = dt; }
+        else if (act === 'regDeleteValue') { body.name = nm; }
+        return body;
+      }, label);
+    };
+  }
+
+  // --- Templates ---
+  function regOpenTemplates() {
+    var bg = regShowModal([
+      '<h3>Modèles de regkeys</h3>',
+      '<div id="regTplBody" style="max-height:60vh;overflow:auto"><div class="regEmpty">Chargement…</div></div>',
+      '<div class="actions"><button id="regTplClose">Fermer</button></div>',
+    ].join(''));
+    bg.querySelector('#regTplClose').onclick = function () { regCloseModal(bg); };
+    apiReg('regTemplates').then(function (r) {
+      if (r.error) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">' + esc(r.error) + '</div>'; return; }
+      var cats = (r.categories || []);
+      if (!cats.length) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">Aucun modèle.</div>'; return; }
+      var html = '';
+      cats.forEach(function (c) {
+        html += '<div style="margin:10px 0 4px 0;font-weight:600;color:#333">' + esc(c.name) + '</div>';
+        (c.templates || []).forEach(function (t) {
+          html += '<div style="border:1px solid #e0e0e0;border-radius:4px;padding:8px;margin-bottom:6px;display:flex;gap:8px;align-items:flex-start">'
+                + '<div style="flex:1">'
+                + '  <div style="font-weight:500">' + esc(t.name) + '</div>'
+                + '  <div style="font-size:12px;color:#666;margin-top:2px">' + esc(t.description || '') + '</div>'
+                + '  <div style="font-size:11px;color:#999;margin-top:2px">' + (t.ops || []).length + ' opération(s)</div>'
+                + '</div>'
+                + '<button class="regTplApply" data-id="' + esc(t.id) + '">Appliquer</button>'
+                + '</div>';
+        });
+      });
+      var body = bg.querySelector('#regTplBody');
+      body.innerHTML = html;
+      var index = {};
+      cats.forEach(function (c) { (c.templates || []).forEach(function (t) { index[t.id] = t; }); });
+      Array.prototype.forEach.call(body.querySelectorAll('.regTplApply'), function (btn) {
+        btn.onclick = function () {
+          var tpl = index[btn.getAttribute('data-id')];
+          if (!tpl) return;
+          regCloseModal(bg);
+          regApplyTemplate(tpl);
+        };
+      });
+    });
+  }
+
+  function regApplyTemplate(tpl) {
+    var ids = regTargetNodes();
+    if (!ids.length) return alert('Aucun poste cible.');
+    if (!confirm('Appliquer "' + tpl.name + '" sur ' + ids.length + ' poste(s) ?\n\n' + (tpl.ops || []).length + ' opération(s) par poste.')) return;
+    var bg = regShowModal([
+      '<h3>Application : ' + esc(tpl.name) + ' — ' + ids.length + ' poste' + (ids.length > 1 ? 's' : '') + '</h3>',
+      '<div id="regBRes" class="regBatchRes"></div>',
+      '<div class="actions"><button id="regBClose" disabled>Fermer</button></div>',
+    ].join(''));
+    var resBox = bg.querySelector('#regBRes');
+    var btnClose = bg.querySelector('#regBClose');
+    btnClose.onclick = function () { regCloseModal(bg); };
+    var nameById = {};
+    regAgents.forEach(function (a) { nameById[a.id] = a.name; });
+    var opMap = { writeValue: 'regWriteValue', deleteValue: 'regDeleteValue', createKey: 'regCreateKey', deleteKey: 'regDeleteKey' };
+    var i = 0, okN = 0, koN = 0;
+    function next() {
+      if (i >= ids.length) {
+        resBox.innerHTML += '\n<div><b>Terminé : ' + okN + ' OK, ' + koN + ' KO</b></div>';
+        btnClose.disabled = false;
+        return;
+      }
+      var id = ids[i++];
+      resBox.innerHTML += '<div>• ' + esc(nameById[id] || id) + ' … </div>';
+      resBox.scrollTop = resBox.scrollHeight;
+      var line = resBox.lastChild;
+      var ops = (tpl.ops || []).slice();
+      var failed = false;
+      function nextOp() {
+        if (failed || !ops.length) {
+          if (failed) { koN++; } else { okN++; line.innerHTML += '<span class="ok">OK</span>'; }
+          return next();
+        }
+        var op = ops.shift();
+        var action = opMap[op.op] || ('reg' + op.op.charAt(0).toUpperCase() + op.op.slice(1));
+        var body = { nodeId: id, path: op.path };
+        if (op.name !== undefined) body.name = op.name;
+        if (op.type !== undefined) body.type = op.type;
+        if (op.data !== undefined) body.data = op.data;
+        callAgentReg(action, body).then(nextOp).catch(function (e) {
+          failed = true;
+          line.innerHTML += '<span class="ko">KO — ' + esc(op.op + ': ' + e.message) + '</span>';
+          next();
+        });
+      }
+      nextOp();
+    }
+    next();
+  }
+
+  // --- Bindings ---
+  $$('regAgentFilter').oninput = regRenderAgents;
+  $$('regRefreshAgents').onclick = regLoadAgents;
+  $$('regAgentSelAll').onclick = function () {
+    var any = Object.keys(regChecked).length > 0;
+    regChecked = {};
+    if (!any) regAgents.filter(function (a) { return a.online; }).forEach(function (a) { regChecked[a.id] = true; });
+    regRenderAgents(); regUpdateBatchTag();
+  };
+  $$('regRefreshTree').onclick = function () { if (regActiveNode) regRenderRoots(); };
+  $$('regNewValBtn').onclick = function () { if (regSelPath) regEditValue('', null); };
+  $$('regNewKeyBtn').onclick = function () { if (regSelPath) regCreateKey(); };
+  $$('regDelKeyBtn').onclick = function () { if (regSelPath) regDeleteCurrentKey(); };
+  $$('regQuickBtn').onclick = regOpenQuick;
+  $$('regTemplatesBtn').onclick = regOpenTemplates;
+
+  // Charge la liste à la 1re ouverture du tab (lazy).
+  var regLoaded = false;
+  document.querySelector('.tab[data-tab="registry"]').addEventListener('click', function () {
+    if (regLoaded) return;
+    regLoaded = true;
+    regLoadAgents();
+  });
+})();
 </script>
 
 </body>

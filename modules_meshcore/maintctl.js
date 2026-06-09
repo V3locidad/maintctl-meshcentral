@@ -62,6 +62,13 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'eventList':
                 doEventList(args);
                 return 'eventList started';
+            case 'regEnumKeys':    regRunEnumKeys(args); return 'regEnumKeys started';
+            case 'regEnumValues':  regRunPs(args, regPsEnumValues(args.path)); return 'regEnumValues started';
+            case 'regReadValue':   regRunPs(args, regPsReadValue(args.path, args.name)); return 'regReadValue started';
+            case 'regWriteValue':  regRunPs(args, regPsWriteValue(args.path, args.name, args.type, args.data)); return 'regWriteValue started';
+            case 'regDeleteValue': regRunPs(args, regPsDeleteValue(args.path, args.name)); return 'regDeleteValue started';
+            case 'regDeleteKey':   regRunPs(args, regPsDeleteKey(args.path)); return 'regDeleteKey started';
+            case 'regCreateKey':   regRunPs(args, regPsCreateKey(args.path)); return 'regCreateKey started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -1020,4 +1027,242 @@ function doDevList(data) {
             logTail: (!ok || err) ? (log || '').slice(-1000) : ''
         });
     });
+}
+
+// ============================================================
+// Registre (ex-regctl) — édition de registre Windows via PowerShell.
+// Toutes les ops répondent { pluginaction:'regResult', dispatchId, ok, data|error }.
+// ============================================================
+
+function regPsWrap(body) {
+    return [
+        '$ErrorActionPreference = "Stop"',
+        '$ProgressPreference = "SilentlyContinue"',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+        'try {',
+        body,
+        '} catch {',
+        '  $e = @{ __error = $_.Exception.Message } | ConvertTo-Json -Compress',
+        '  Write-Output $e',
+        '}'
+    ].join('\r\n');
+}
+
+function regNormalizePath(p) {
+    var map = {
+        HKLM: 'HKEY_LOCAL_MACHINE', HKCU: 'HKEY_CURRENT_USER',
+        HKCR: 'HKEY_CLASSES_ROOT', HKU: 'HKEY_USERS', HKCC: 'HKEY_CURRENT_CONFIG',
+    };
+    var s = String(p).replace(/\//g, '\\');
+    var m = s.match(/^([A-Z]+)(\\.*)?$/);
+    if (m && map[m[1]]) s = map[m[1]] + (m[2] || '');
+    return s;
+}
+function regPsPath(p) { return 'Registry::' + regNormalizePath(p); }
+
+function regEscapePs(s) {
+    return String(s).replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"');
+}
+
+function regPsEnumValues(p) {
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        '$item = Get-Item -Path $p -ErrorAction Stop',
+        '$valNames = $item.GetValueNames()',
+        '$list = @()',
+        'foreach ($n in $valNames) {',
+        '  $kind = $item.GetValueKind($n).ToString()',
+        '  $raw  = $item.GetValue($n, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)',
+        '  $data = $null',
+        '  switch ($kind) {',
+        '    "Binary"     { $data = ($raw | ForEach-Object { $_.ToString("X2") }) -join "" }',
+        '    "DWord"      { $data = [string]$raw }',
+        '    "QWord"      { $data = [string]$raw }',
+        '    "MultiString"{ $data = @($raw) }',
+        '    default      { $data = [string]$raw }',
+        '  }',
+        '  $list += @{ name = $n; type = $kind; data = $data }',
+        '}',
+        '$out = @{ values = $list } | ConvertTo-Json -Compress -Depth 6',
+        'Write-Output $out',
+    ].join('\r\n'));
+}
+
+function regPsReadValue(p, name) {
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        '$n = "' + regEscapePs(name) + '"',
+        '$item = Get-Item -Path $p -ErrorAction Stop',
+        '$kind = $item.GetValueKind($n).ToString()',
+        '$raw  = $item.GetValue($n, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)',
+        'switch ($kind) {',
+        '  "Binary"     { $d = ($raw | ForEach-Object { $_.ToString("X2") }) -join "" }',
+        '  "DWord"      { $d = [string]$raw }',
+        '  "QWord"      { $d = [string]$raw }',
+        '  "MultiString"{ $d = @($raw) }',
+        '  default      { $d = [string]$raw }',
+        '}',
+        '$out = @{ name = $n; type = $kind; data = $d } | ConvertTo-Json -Compress -Depth 6',
+        'Write-Output $out',
+    ].join('\r\n'));
+}
+
+function regPsWriteValue(p, name, type, data) {
+    var body;
+    var typeNorm = String(type || 'String');
+    // Compat templates : REG_DWORD / REG_SZ / etc.
+    var aliases = {
+        REG_SZ: 'String', REG_EXPAND_SZ: 'ExpandString', REG_BINARY: 'Binary',
+        REG_DWORD: 'DWord', REG_QWORD: 'QWord', REG_MULTI_SZ: 'MultiString',
+    };
+    if (aliases[typeNorm]) typeNorm = aliases[typeNorm];
+    if (typeNorm === 'Binary') {
+        body = [
+            '$hex = "' + regEscapePs(String(data).replace(/[^0-9a-fA-F]/g, '')) + '"',
+            '$bytes = New-Object byte[] ($hex.Length / 2)',
+            'for ($i=0; $i -lt $hex.Length; $i += 2) { $bytes[$i/2] = [Convert]::ToByte($hex.Substring($i,2),16) }',
+            'New-ItemProperty -Path $p -Name $n -PropertyType Binary -Value $bytes -Force | Out-Null',
+        ].join('\r\n');
+    } else if (typeNorm === 'DWord' || typeNorm === 'QWord') {
+        body = 'New-ItemProperty -Path $p -Name $n -PropertyType ' + typeNorm + ' -Value ([Int64]"' + regEscapePs(String(data)) + '") -Force | Out-Null';
+    } else if (typeNorm === 'MultiString') {
+        var lines = Array.isArray(data) ? data : String(data).split(/\r?\n/);
+        var quoted = lines.map(function (l) { return '"' + regEscapePs(l) + '"'; }).join(',');
+        body = 'New-ItemProperty -Path $p -Name $n -PropertyType MultiString -Value @(' + quoted + ') -Force | Out-Null';
+    } else {
+        body = 'New-ItemProperty -Path $p -Name $n -PropertyType ' + typeNorm + ' -Value "' + regEscapePs(String(data)) + '" -Force | Out-Null';
+    }
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        '$n = "' + regEscapePs(name) + '"',
+        'if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }',
+        body,
+        'Write-Output (@{ ok = $true } | ConvertTo-Json -Compress)',
+    ].join('\r\n'));
+}
+
+function regPsDeleteValue(p, name) {
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        '$n = "' + regEscapePs(name) + '"',
+        'Remove-ItemProperty -Path $p -Name $n -Force -ErrorAction Stop',
+        'Write-Output (@{ ok = $true } | ConvertTo-Json -Compress)',
+    ].join('\r\n'));
+}
+function regPsDeleteKey(p) {
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        'Remove-Item -Path $p -Recurse -Force -ErrorAction Stop',
+        'Write-Output (@{ ok = $true } | ConvertTo-Json -Compress)',
+    ].join('\r\n'));
+}
+function regPsCreateKey(p) {
+    return regPsWrap([
+        '$p = "' + regEscapePs(regPsPath(p)) + '"',
+        'New-Item -Path $p -Force | Out-Null',
+        'Write-Output (@{ ok = $true } | ConvertTo-Json -Compress)',
+    ].join('\r\n'));
+}
+
+// enumKeys via reg.exe (cold-start PS = 1-2s, reg.exe < 200ms).
+function regRunEnumKeys(args) {
+    var dispatchId = args.dispatchId;
+    var cp = require('child_process');
+    var windir = process.env.windir || process.env.WINDIR || 'C:\\Windows';
+    var cmdExe = windir + '\\System32\\cmd.exe';
+    var rPath = regNormalizePath(args.path);
+    var child;
+    try {
+        child = cp.execFile(cmdExe, ['/c', 'reg query "' + rPath.replace(/"/g, '\\"') + '"']);
+    } catch (e) {
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'spawn reg: ' + e });
+        return;
+    }
+    var stdout = '', stderr = '';
+    try {
+        if (child.stdout) child.stdout.on('data', function (c) { stdout += String(c); });
+        if (child.stderr) child.stderr.on('data', function (c) { stderr += String(c); });
+    } catch (e) {}
+    var finished = false;
+    child.on('exit', function (code) {
+        if (finished) return; finished = true;
+        var lines = stdout.split(/\r?\n/);
+        var keys = [];
+        var prefix = rPath;
+        lines.forEach(function (l) {
+            if (!l || l.charAt(0) === ' ' || l.charAt(0) === '\t') return;
+            if (l.indexOf(prefix) === 0) {
+                var rest = l.substring(prefix.length);
+                if (rest.charAt(0) === '\\') rest = rest.substring(1);
+                if (rest.length > 0) keys.push(rest);
+            }
+        });
+        if (code !== 0 && keys.length === 0 && stderr) {
+            reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: stderr.trim().slice(0, 300) });
+            return;
+        }
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: true, data: { keys: keys } });
+    });
+    setTimeout(function () {
+        if (finished) return; finished = true;
+        try { child.kill(); } catch (e) {}
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'reg timeout' });
+    }, 15 * 1000);
+}
+
+function regRunPs(args, script) {
+    var dispatchId = args.dispatchId;
+    var cp = require('child_process');
+    var fs = require('fs');
+    var windir = process.env.windir || process.env.WINDIR || 'C:\\Windows';
+    var psExe = windir + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    var tmpDir = process.env.TEMP || 'C:\\Windows\\Temp';
+    var psPath = tmpDir + '\\maintctl_reg_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.ps1';
+    try { fs.writeFileSync(psPath, script); }
+    catch (e) {
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'write ps1: ' + e });
+        return;
+    }
+    var psArgs = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', psPath];
+    var child;
+    try { child = cp.execFile(psExe, psArgs); }
+    catch (e) {
+        try { fs.unlinkSync(psPath); } catch (e2) {}
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'spawn: ' + e });
+        return;
+    }
+    var stdout = '', stderr = '';
+    try {
+        if (child.stdout) child.stdout.on('data', function (c) { stdout += String(c); });
+        if (child.stderr) child.stderr.on('data', function (c) { stderr += String(c); });
+    } catch (e) {}
+    var finished = false;
+    child.on('exit', function (code) {
+        if (finished) return; finished = true;
+        try { fs.unlinkSync(psPath); } catch (e) {}
+        var line = stdout.trim();
+        if (!line) {
+            reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'aucune sortie' + (stderr ? ' (' + stderr.slice(0, 200) + ')' : '') + ' exit=' + code });
+            return;
+        }
+        var lines = line.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
+        var last = lines[lines.length - 1];
+        var parsed = null;
+        try { parsed = JSON.parse(last); }
+        catch (e) {
+            reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'JSON invalide: ' + last.slice(0, 200) });
+            return;
+        }
+        if (parsed && parsed.__error) {
+            reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: parsed.__error });
+            return;
+        }
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: true, data: parsed });
+    });
+    setTimeout(function () {
+        if (finished) return; finished = true;
+        try { child.kill(); } catch (e) {}
+        try { fs.unlinkSync(psPath); } catch (e) {}
+        reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'timeout' });
+    }, 60 * 1000);
 }
