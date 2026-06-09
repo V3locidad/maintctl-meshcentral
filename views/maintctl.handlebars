@@ -2433,21 +2433,33 @@ refreshAgents().then(function () {
       apiReg('regTemplates').then(function (r) {
         if (r.error) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">' + esc(r.error) + '</div>'; return; }
         var cats = (r.categories || []);
-        if (!cats.length) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">Aucun modèle. Clique sur "+ Nouveau modèle".</div>'; return; }
+        var hidden = r.hiddenBuiltins || [];
         var html = '';
+        if (hidden.length) {
+          html += '<div style="background:#f8f9fa;border:1px dashed #ccc;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#666">'
+                + hidden.length + ' modèle(s) livré(s) masqué(s) : '
+                + hidden.map(function (h) {
+                    return '<button class="regTplUnhide" data-id="' + esc(h.id) + '" style="font-size:11px;padding:1px 6px;margin:1px">' + esc(h.name) + ' ↺</button>';
+                  }).join(' ')
+                + '</div>';
+        }
+        if (!cats.length && !hidden.length) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">Aucun modèle. Clique sur "+ Nouveau modèle".</div>'; return; }
         cats.forEach(function (c) {
           html += '<div style="margin:10px 0 4px 0;font-weight:600;color:#333">' + esc(c.name) + '</div>';
           (c.templates || []).forEach(function (t) {
-            var actions = '<button class="regTplApply" data-id="' + esc(t.id) + '">Appliquer</button>';
-            if (!t.builtin) {
-              actions += ' <button class="regTplEdit" data-id="' + esc(t.id) + '" title="Éditer">✎</button>'
-                       + ' <button class="regTplDel regDanger" data-id="' + esc(t.id) + '" title="Supprimer">×</button>';
-            } else {
-              actions += ' <span style="font-size:10px;color:#aaa;margin-left:4px" title="Modèle livré avec le plugin, non modifiable">livré</span>';
+            var actions = '<button class="regTplApply" data-id="' + esc(t.id) + '">Appliquer</button>'
+                        + ' <button class="regTplEdit" data-id="' + esc(t.id) + '" title="Éditer">✎</button>'
+                        + ' <button class="regTplDel regDanger" data-id="' + esc(t.id) + '" title="Supprimer">×</button>';
+            if (t._origin === 'override') {
+              actions += ' <button class="regTplRevert" data-id="' + esc(t.id) + '" title="Restaurer la version livrée">↺</button>';
             }
+            var originBadge = '';
+            if (t._origin === 'builtin') originBadge = '<span style="font-size:10px;color:#888;background:#eee;padding:1px 5px;border-radius:3px;margin-left:6px" title="Modèle livré avec le plugin">livré</span>';
+            else if (t._origin === 'override') originBadge = '<span style="font-size:10px;color:#856404;background:#fff3cd;padding:1px 5px;border-radius:3px;margin-left:6px" title="Modèle livré que tu as modifié">modifié</span>';
+            else originBadge = '<span style="font-size:10px;color:#1c6b3e;background:#e7f7ee;padding:1px 5px;border-radius:3px;margin-left:6px" title="Modèle personnalisé">perso</span>';
             html += '<div style="border:1px solid #e0e0e0;border-radius:4px;padding:8px;margin-bottom:6px;display:flex;gap:8px;align-items:flex-start">'
                   + '<div style="flex:1">'
-                  + '  <div style="font-weight:500">' + esc(t.name) + '</div>'
+                  + '  <div style="font-weight:500">' + esc(t.name) + originBadge + '</div>'
                   + '  <div style="font-size:12px;color:#666;margin-top:2px">' + esc(t.description || '') + '</div>'
                   + '  <div style="font-size:11px;color:#999;margin-top:2px">' + (t.ops || []).length + ' opération(s)</div>'
                   + '</div>'
@@ -2479,8 +2491,30 @@ refreshAgents().then(function () {
           btn.onclick = function () {
             var id = btn.getAttribute('data-id');
             var tpl = index[id];
-            if (!confirm('Supprimer le modèle "' + (tpl && tpl.name || id) + '" ?')) return;
+            var msg = 'Supprimer le modèle "' + (tpl && tpl.name || id) + '" ?';
+            if (tpl && (tpl._origin === 'builtin' || tpl._origin === 'override')) {
+              msg += '\n\n(Modèle livré : il sera masqué. Tu pourras le restaurer plus tard via ↺.)';
+            }
+            if (!confirm(msg)) return;
             apiReg('regTemplateDelete', { id: id }).then(function (r) {
+              if (r.error) return alert('Erreur : ' + r.error);
+              reload();
+            });
+          };
+        });
+        Array.prototype.forEach.call(body.querySelectorAll('.regTplRevert'), function (btn) {
+          btn.onclick = function () {
+            var id = btn.getAttribute('data-id');
+            if (!confirm('Restaurer la version livrée de ce modèle ? Tes modifications seront perdues.')) return;
+            apiReg('regTemplateRevert', { id: id }).then(function (r) {
+              if (r.error) return alert('Erreur : ' + r.error);
+              reload();
+            });
+          };
+        });
+        Array.prototype.forEach.call(body.querySelectorAll('.regTplUnhide'), function (btn) {
+          btn.onclick = function () {
+            apiReg('regTemplateRevert', { id: btn.getAttribute('data-id') }).then(function (r) {
               if (r.error) return alert('Erreur : ' + r.error);
               reload();
             });

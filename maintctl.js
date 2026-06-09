@@ -1291,25 +1291,51 @@ module.exports.maintctl = function (parent) {
         // ---- Registre (ex-regctl, intégré) ----
 
         if (action === 'regTemplates') {
-            // Fusionne les modèles "builtin" (regkey-templates.json livré avec
-            // le plugin) avec les modèles "custom" sauvés par l'utilisateur
-            // (regkey-templates-custom.json — préservé entre màj plugin).
+            // Fusionne builtin + custom :
+            //  - custom override builtin par id (l'édition d'un builtin crée un
+            //    custom avec le même id qui le remplace)
+            //  - hiddenIds : ids de builtin que l'utilisateur a supprimés
+            //  - tag _origin = 'builtin' | 'custom' | 'override'
             const builtinPath = path.join(__dirname, 'regkey-templates.json');
             const customPath = path.join(__dirname, 'regkey-templates-custom.json');
             let builtin = { categories: [] };
-            let custom = { categories: [] };
+            let custom = { categories: [], hiddenIds: [] };
             try { builtin = JSON.parse(fs.readFileSync(builtinPath, 'utf8')); } catch (e) {}
             try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
-            // Tague les templates pour que l'UI puisse afficher edit/delete uniquement sur les customs
-            (builtin.categories || []).forEach((c) => (c.templates || []).forEach((t) => { t.builtin = true; }));
-            (custom.categories || []).forEach((c) => (c.templates || []).forEach((t) => { t.builtin = false; }));
-            // Merge par nom de catégorie
+            const hidden = (custom.hiddenIds || []).reduce((m, id) => (m[id] = true, m), {});
+            const customById = {};
+            const builtinIds = {};
+            (builtin.categories || []).forEach((c) => (c.templates || []).forEach((t) => { builtinIds[t.id] = true; }));
+            (custom.categories || []).forEach((c) => (c.templates || []).forEach((t) => { customById[t.id] = { tpl: t, category: c.name }; }));
             const out = { categories: [] };
             const byName = {};
-            (builtin.categories || []).forEach((c) => { byName[c.name] = { name: c.name, templates: (c.templates || []).slice() }; out.categories.push(byName[c.name]); });
+            (builtin.categories || []).forEach((c) => {
+                const cat = { name: c.name, templates: [] };
+                (c.templates || []).forEach((t) => {
+                    if (hidden[t.id]) return;
+                    if (customById[t.id]) {
+                        // override : on prend la version custom (peut avoir changé de catégorie aussi)
+                        return;
+                    }
+                    cat.templates.push(Object.assign({}, t, { _origin: 'builtin' }));
+                });
+                if (cat.templates.length) { byName[c.name] = cat; out.categories.push(cat); }
+            });
             (custom.categories || []).forEach((c) => {
-                if (byName[c.name]) byName[c.name].templates = byName[c.name].templates.concat(c.templates || []);
-                else { byName[c.name] = { name: c.name, templates: (c.templates || []).slice() }; out.categories.push(byName[c.name]); }
+                let cat = byName[c.name];
+                if (!cat) { cat = { name: c.name, templates: [] }; byName[c.name] = cat; out.categories.push(cat); }
+                (c.templates || []).forEach((t) => {
+                    cat.templates.push(Object.assign({}, t, { _origin: builtinIds[t.id] ? 'override' : 'custom' }));
+                });
+            });
+            // Liste des builtins masqués (pour permettre restauration depuis l'UI)
+            out.hiddenBuiltins = [];
+            (custom.hiddenIds || []).forEach((id) => {
+                (builtin.categories || []).forEach((c) => {
+                    (c.templates || []).forEach((t) => {
+                        if (t.id === id) out.hiddenBuiltins.push({ id: t.id, name: t.name, category: c.name });
+                    });
+                });
             });
             return sendJson(res, 200, out);
         }
@@ -1363,17 +1389,48 @@ module.exports.maintctl = function (parent) {
         if (action === 'regTemplateDelete') {
             const id = String((req.query && req.query.id) || '');
             if (!id) return sendJson(res, 400, { error: 'id requis' });
+            const builtinPath = path.join(__dirname, 'regkey-templates.json');
             const customPath = path.join(__dirname, 'regkey-templates-custom.json');
-            let custom = { categories: [] };
+            let builtin = { categories: [] };
+            let custom = { categories: [], hiddenIds: [] };
+            try { builtin = JSON.parse(fs.readFileSync(builtinPath, 'utf8')); } catch (e) {}
             try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
-            let found = false;
+            const isBuiltin = (builtin.categories || []).some((c) => (c.templates || []).some((t) => t.id === id));
+            // Retire d'éventuels overrides custom du même id
+            let removed = false;
             (custom.categories || []).forEach((c) => {
                 const before = (c.templates || []).length;
                 c.templates = (c.templates || []).filter((t) => t.id !== id);
-                if (c.templates.length !== before) found = true;
+                if (c.templates.length !== before) removed = true;
             });
-            if (!found) return sendJson(res, 404, { error: 'modèle introuvable (ou builtin non supprimable)' });
             custom.categories = (custom.categories || []).filter((c) => (c.templates || []).length);
+            // Si c'est aussi un builtin → ajoute à hiddenIds (pour qu'il ne réapparaisse pas)
+            if (isBuiltin) {
+                custom.hiddenIds = custom.hiddenIds || [];
+                if (custom.hiddenIds.indexOf(id) < 0) custom.hiddenIds.push(id);
+                removed = true;
+            }
+            if (!removed) return sendJson(res, 404, { error: 'modèle introuvable' });
+            try {
+                fs.writeFileSync(customPath, JSON.stringify(custom, null, 2));
+            } catch (e) {
+                return sendJson(res, 500, { error: 'écriture: ' + e.message });
+            }
+            return sendJson(res, 200, { ok: true });
+        }
+
+        if (action === 'regTemplateRevert') {
+            // Annule l'override / désuppression d'un builtin :
+            //  - supprime le custom du même id
+            //  - retire l'id de hiddenIds
+            const id = String((req.query && req.query.id) || '');
+            if (!id) return sendJson(res, 400, { error: 'id requis' });
+            const customPath = path.join(__dirname, 'regkey-templates-custom.json');
+            let custom = { categories: [], hiddenIds: [] };
+            try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
+            (custom.categories || []).forEach((c) => { c.templates = (c.templates || []).filter((t) => t.id !== id); });
+            custom.categories = (custom.categories || []).filter((c) => (c.templates || []).length);
+            custom.hiddenIds = (custom.hiddenIds || []).filter((h) => h !== id);
             try {
                 fs.writeFileSync(customPath, JSON.stringify(custom, null, 2));
             } catch (e) {
