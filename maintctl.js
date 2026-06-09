@@ -1291,13 +1291,95 @@ module.exports.maintctl = function (parent) {
         // ---- Registre (ex-regctl, intégré) ----
 
         if (action === 'regTemplates') {
-            try {
-                const tplPath = path.join(__dirname, 'regkey-templates.json');
-                const raw = fs.readFileSync(tplPath, 'utf8');
-                return sendJson(res, 200, JSON.parse(raw));
-            } catch (e) {
-                return sendJson(res, 500, { error: 'regkey-templates.json invalide: ' + e.message });
+            // Fusionne les modèles "builtin" (regkey-templates.json livré avec
+            // le plugin) avec les modèles "custom" sauvés par l'utilisateur
+            // (regkey-templates-custom.json — préservé entre màj plugin).
+            const builtinPath = path.join(__dirname, 'regkey-templates.json');
+            const customPath = path.join(__dirname, 'regkey-templates-custom.json');
+            let builtin = { categories: [] };
+            let custom = { categories: [] };
+            try { builtin = JSON.parse(fs.readFileSync(builtinPath, 'utf8')); } catch (e) {}
+            try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
+            // Tague les templates pour que l'UI puisse afficher edit/delete uniquement sur les customs
+            (builtin.categories || []).forEach((c) => (c.templates || []).forEach((t) => { t.builtin = true; }));
+            (custom.categories || []).forEach((c) => (c.templates || []).forEach((t) => { t.builtin = false; }));
+            // Merge par nom de catégorie
+            const out = { categories: [] };
+            const byName = {};
+            (builtin.categories || []).forEach((c) => { byName[c.name] = { name: c.name, templates: (c.templates || []).slice() }; out.categories.push(byName[c.name]); });
+            (custom.categories || []).forEach((c) => {
+                if (byName[c.name]) byName[c.name].templates = byName[c.name].templates.concat(c.templates || []);
+                else { byName[c.name] = { name: c.name, templates: (c.templates || []).slice() }; out.categories.push(byName[c.name]); }
+            });
+            return sendJson(res, 200, out);
+        }
+
+        if (action === 'regTemplateSave') {
+            let body = {};
+            try { body = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const name = String(body.name || '').trim();
+            const category = String(body.category || 'Personnalisés').trim() || 'Personnalisés';
+            const description = String(body.description || '').trim();
+            const id = String(body.id || '').trim();
+            const ops = Array.isArray(body.ops) ? body.ops : null;
+            if (!name) return sendJson(res, 400, { error: 'name requis' });
+            if (!ops || !ops.length) return sendJson(res, 400, { error: 'au moins une op requise' });
+            const validOps = ['writeValue', 'deleteValue', 'createKey', 'deleteKey'];
+            for (let i = 0; i < ops.length; i++) {
+                const o = ops[i];
+                if (!o || validOps.indexOf(o.op) < 0) return sendJson(res, 400, { error: 'op invalide #' + (i + 1) + ': ' + (o && o.op) });
+                if (!o.path) return sendJson(res, 400, { error: 'path manquant op #' + (i + 1) });
+                if ((o.op === 'writeValue' || o.op === 'deleteValue') && o.name === undefined) {
+                    return sendJson(res, 400, { error: 'name manquant op #' + (i + 1) });
+                }
+                if (o.op === 'writeValue' && (!o.type || o.data === undefined)) {
+                    return sendJson(res, 400, { error: 'type/data manquants op #' + (i + 1) });
+                }
             }
+            const customPath = path.join(__dirname, 'regkey-templates-custom.json');
+            let custom = { categories: [] };
+            try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
+            // Génère un id si nouveau
+            const tplId = id || ('custom-' + crypto.randomBytes(6).toString('hex'));
+            const newTpl = { id: tplId, name: name, description: description, ops: ops };
+            // Retire l'ancien (par id) puis insère dans la bonne catégorie
+            (custom.categories || []).forEach((c) => {
+                c.templates = (c.templates || []).filter((t) => t.id !== tplId);
+            });
+            let cat = (custom.categories || []).find((c) => c.name === category);
+            if (!cat) { cat = { name: category, templates: [] }; (custom.categories = custom.categories || []).push(cat); }
+            cat.templates.push(newTpl);
+            // Nettoie les catégories vides
+            custom.categories = (custom.categories || []).filter((c) => (c.templates || []).length);
+            try {
+                fs.writeFileSync(customPath, JSON.stringify(custom, null, 2));
+            } catch (e) {
+                return sendJson(res, 500, { error: 'écriture: ' + e.message });
+            }
+            return sendJson(res, 200, { ok: true, id: tplId });
+        }
+
+        if (action === 'regTemplateDelete') {
+            const id = String((req.query && req.query.id) || '');
+            if (!id) return sendJson(res, 400, { error: 'id requis' });
+            const customPath = path.join(__dirname, 'regkey-templates-custom.json');
+            let custom = { categories: [] };
+            try { custom = JSON.parse(fs.readFileSync(customPath, 'utf8')); } catch (e) {}
+            let found = false;
+            (custom.categories || []).forEach((c) => {
+                const before = (c.templates || []).length;
+                c.templates = (c.templates || []).filter((t) => t.id !== id);
+                if (c.templates.length !== before) found = true;
+            });
+            if (!found) return sendJson(res, 404, { error: 'modèle introuvable (ou builtin non supprimable)' });
+            custom.categories = (custom.categories || []).filter((c) => (c.templates || []).length);
+            try {
+                fs.writeFileSync(customPath, JSON.stringify(custom, null, 2));
+            } catch (e) {
+                return sendJson(res, 500, { error: 'écriture: ' + e.message });
+            }
+            return sendJson(res, 200, { ok: true });
         }
 
         const regOpMap = {

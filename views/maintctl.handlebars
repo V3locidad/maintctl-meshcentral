@@ -2420,42 +2420,188 @@ refreshAgents().then(function () {
   // --- Templates ---
   function regOpenTemplates() {
     var bg = regShowModal([
-      '<h3>Modèles de regkeys</h3>',
+      '<h3>Modèles de regkeys <button id="regTplNew" style="float:right;font-size:12px">+ Nouveau modèle</button></h3>',
       '<div id="regTplBody" style="max-height:60vh;overflow:auto"><div class="regEmpty">Chargement…</div></div>',
       '<div class="actions"><button id="regTplClose">Fermer</button></div>',
     ].join(''));
     bg.querySelector('#regTplClose').onclick = function () { regCloseModal(bg); };
-    apiReg('regTemplates').then(function (r) {
-      if (r.error) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">' + esc(r.error) + '</div>'; return; }
-      var cats = (r.categories || []);
-      if (!cats.length) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">Aucun modèle.</div>'; return; }
-      var html = '';
-      cats.forEach(function (c) {
-        html += '<div style="margin:10px 0 4px 0;font-weight:600;color:#333">' + esc(c.name) + '</div>';
-        (c.templates || []).forEach(function (t) {
-          html += '<div style="border:1px solid #e0e0e0;border-radius:4px;padding:8px;margin-bottom:6px;display:flex;gap:8px;align-items:flex-start">'
-                + '<div style="flex:1">'
-                + '  <div style="font-weight:500">' + esc(t.name) + '</div>'
-                + '  <div style="font-size:12px;color:#666;margin-top:2px">' + esc(t.description || '') + '</div>'
-                + '  <div style="font-size:11px;color:#999;margin-top:2px">' + (t.ops || []).length + ' opération(s)</div>'
-                + '</div>'
-                + '<button class="regTplApply" data-id="' + esc(t.id) + '">Appliquer</button>'
-                + '</div>';
+    bg.querySelector('#regTplNew').onclick = function () {
+      regCloseModal(bg);
+      regOpenTemplateEditor(null);
+    };
+    function reload() {
+      apiReg('regTemplates').then(function (r) {
+        if (r.error) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">' + esc(r.error) + '</div>'; return; }
+        var cats = (r.categories || []);
+        if (!cats.length) { bg.querySelector('#regTplBody').innerHTML = '<div class="regEmpty">Aucun modèle. Clique sur "+ Nouveau modèle".</div>'; return; }
+        var html = '';
+        cats.forEach(function (c) {
+          html += '<div style="margin:10px 0 4px 0;font-weight:600;color:#333">' + esc(c.name) + '</div>';
+          (c.templates || []).forEach(function (t) {
+            var actions = '<button class="regTplApply" data-id="' + esc(t.id) + '">Appliquer</button>';
+            if (!t.builtin) {
+              actions += ' <button class="regTplEdit" data-id="' + esc(t.id) + '" title="Éditer">✎</button>'
+                       + ' <button class="regTplDel regDanger" data-id="' + esc(t.id) + '" title="Supprimer">×</button>';
+            } else {
+              actions += ' <span style="font-size:10px;color:#aaa;margin-left:4px" title="Modèle livré avec le plugin, non modifiable">livré</span>';
+            }
+            html += '<div style="border:1px solid #e0e0e0;border-radius:4px;padding:8px;margin-bottom:6px;display:flex;gap:8px;align-items:flex-start">'
+                  + '<div style="flex:1">'
+                  + '  <div style="font-weight:500">' + esc(t.name) + '</div>'
+                  + '  <div style="font-size:12px;color:#666;margin-top:2px">' + esc(t.description || '') + '</div>'
+                  + '  <div style="font-size:11px;color:#999;margin-top:2px">' + (t.ops || []).length + ' opération(s)</div>'
+                  + '</div>'
+                  + '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">' + actions + '</div>'
+                  + '</div>';
+          });
+        });
+        var body = bg.querySelector('#regTplBody');
+        body.innerHTML = html;
+        var index = {};
+        cats.forEach(function (c) { (c.templates || []).forEach(function (t) { t._category = c.name; index[t.id] = t; }); });
+        Array.prototype.forEach.call(body.querySelectorAll('.regTplApply'), function (btn) {
+          btn.onclick = function () {
+            var tpl = index[btn.getAttribute('data-id')];
+            if (!tpl) return;
+            regCloseModal(bg);
+            regApplyTemplate(tpl);
+          };
+        });
+        Array.prototype.forEach.call(body.querySelectorAll('.regTplEdit'), function (btn) {
+          btn.onclick = function () {
+            var tpl = index[btn.getAttribute('data-id')];
+            if (!tpl) return;
+            regCloseModal(bg);
+            regOpenTemplateEditor(tpl);
+          };
+        });
+        Array.prototype.forEach.call(body.querySelectorAll('.regTplDel'), function (btn) {
+          btn.onclick = function () {
+            var id = btn.getAttribute('data-id');
+            var tpl = index[id];
+            if (!confirm('Supprimer le modèle "' + (tpl && tpl.name || id) + '" ?')) return;
+            apiReg('regTemplateDelete', { id: id }).then(function (r) {
+              if (r.error) return alert('Erreur : ' + r.error);
+              reload();
+            });
+          };
         });
       });
-      var body = bg.querySelector('#regTplBody');
-      body.innerHTML = html;
-      var index = {};
-      cats.forEach(function (c) { (c.templates || []).forEach(function (t) { index[t.id] = t; }); });
-      Array.prototype.forEach.call(body.querySelectorAll('.regTplApply'), function (btn) {
-        btn.onclick = function () {
-          var tpl = index[btn.getAttribute('data-id')];
-          if (!tpl) return;
-          regCloseModal(bg);
-          regApplyTemplate(tpl);
+    }
+    reload();
+  }
+
+  // --- Éditeur de modèle (création / édition d'un custom) ---
+  function regOpenTemplateEditor(existing) {
+    var isEdit = !!existing;
+    var ops = isEdit ? (existing.ops || []).map(function (o) { return Object.assign({}, o); }) : [];
+    var bg = regShowModal([
+      '<h3>' + (isEdit ? 'Éditer le modèle' : 'Nouveau modèle') + '</h3>',
+      '<label>Nom</label><input id="regTplName" value="' + esc(isEdit ? existing.name : '') + '" placeholder="ex: Masquer OneDrive">',
+      '<label>Catégorie</label><input id="regTplCat" value="' + esc(isEdit ? (existing._category || 'Personnalisés') : 'Personnalisés') + '" placeholder="Personnalisés">',
+      '<label>Description</label><input id="regTplDesc" value="' + esc(isEdit ? (existing.description || '') : '') + '" placeholder="Courte description (optionnel)">',
+      '<label style="margin-top:10px">Opérations <span style="color:#888;font-weight:normal;font-size:11px">(exécutées dans l\'ordre)</span></label>',
+      '<div id="regTplOps" style="border:1px solid #eee;border-radius:4px;padding:6px;background:#fafafa;max-height:300px;overflow:auto"></div>',
+      '<div style="margin-top:6px"><button id="regTplAddOp">+ Ajouter une opération</button></div>',
+      '<div class="actions">',
+      '  <button id="regTplCancel">Annuler</button>',
+      '  <button id="regTplSave">Enregistrer</button>',
+      '</div>',
+    ].join(''));
+
+    var REG_TYPES_FULL = ['String', 'ExpandString', 'DWord', 'QWord', 'Binary', 'MultiString', 'REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_EXPAND_SZ', 'REG_BINARY', 'REG_MULTI_SZ'];
+
+    function renderOps() {
+      var box = bg.querySelector('#regTplOps');
+      if (!ops.length) { box.innerHTML = '<div class="regEmpty" style="padding:6px">Aucune opération. Clique sur "+ Ajouter une opération".</div>'; return; }
+      box.innerHTML = ops.map(function (op, idx) {
+        var actSel = ['writeValue','deleteValue','createKey','deleteKey'].map(function (a) {
+          return '<option value="' + a + '"' + (a === op.op ? ' selected' : '') + '>' + a + '</option>';
+        }).join('');
+        var typeSel = REG_TYPES_FULL.map(function (t) {
+          return '<option' + (t === op.type ? ' selected' : '') + '>' + t + '</option>';
+        }).join('');
+        var showName = (op.op === 'writeValue' || op.op === 'deleteValue');
+        var showType = (op.op === 'writeValue');
+        var dataVal = Array.isArray(op.data) ? op.data.join('\n') : (op.data == null ? '' : String(op.data));
+        return '<div style="border:1px solid #ddd;border-radius:4px;padding:6px;margin-bottom:6px;background:#fff" data-idx="' + idx + '">'
+             + '<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">'
+             + '  <b style="font-size:11px;color:#666">#' + (idx + 1) + '</b>'
+             + '  <select class="opAct" style="flex:0 0 130px">' + actSel + '</select>'
+             + '  <input class="opPath" placeholder="HKLM\\Software\\..." value="' + esc(op.path || '') + '" style="flex:1">'
+             + '  <button class="opUp" title="Monter">▲</button>'
+             + '  <button class="opDn" title="Descendre">▼</button>'
+             + '  <button class="opDel regDanger" title="Supprimer">×</button>'
+             + '</div>'
+             + '<div class="opNameWrap" style="display:' + (showName ? 'flex' : 'none') + ';gap:6px;margin-bottom:4px">'
+             + '  <input class="opName" placeholder="nom valeur (vide = défaut)" value="' + esc(op.name == null ? '' : op.name) + '" style="flex:1">'
+             + '  <select class="opType" style="flex:0 0 130px;display:' + (showType ? '' : 'none') + '">' + typeSel + '</select>'
+             + '</div>'
+             + '<div class="opDataWrap" style="display:' + (showType ? 'block' : 'none') + '">'
+             + '  <textarea class="opData" placeholder="donnée (entier pour DWord, hex pour Binary, 1 ligne par entrée pour MultiString)" style="width:100%;box-sizing:border-box;font-family:Menlo,Consolas,monospace;font-size:11px;min-height:40px">' + esc(dataVal) + '</textarea>'
+             + '</div>'
+             + '</div>';
+      }).join('');
+      // Bind handlers — read back values on every change
+      Array.prototype.forEach.call(box.querySelectorAll('[data-idx]'), function (row) {
+        var idx = parseInt(row.getAttribute('data-idx'), 10);
+        var sel = row.querySelector('.opAct');
+        sel.onchange = function () {
+          ops[idx].op = sel.value;
+          renderOps();
+        };
+        row.querySelector('.opPath').oninput = function (e) { ops[idx].path = e.target.value; };
+        var nameInput = row.querySelector('.opName');
+        if (nameInput) nameInput.oninput = function (e) { ops[idx].name = e.target.value; };
+        var typeSel2 = row.querySelector('.opType');
+        if (typeSel2) typeSel2.onchange = function () { ops[idx].type = typeSel2.value; };
+        var dataT = row.querySelector('.opData');
+        if (dataT) dataT.oninput = function (e) { ops[idx].data = e.target.value; };
+        row.querySelector('.opUp').onclick = function () {
+          if (idx === 0) return;
+          var tmp = ops[idx - 1]; ops[idx - 1] = ops[idx]; ops[idx] = tmp; renderOps();
+        };
+        row.querySelector('.opDn').onclick = function () {
+          if (idx === ops.length - 1) return;
+          var tmp = ops[idx + 1]; ops[idx + 1] = ops[idx]; ops[idx] = tmp; renderOps();
+        };
+        row.querySelector('.opDel').onclick = function () {
+          if (!confirm('Supprimer l\'opération #' + (idx + 1) + ' ?')) return;
+          ops.splice(idx, 1); renderOps();
         };
       });
-    });
+    }
+    renderOps();
+
+    bg.querySelector('#regTplAddOp').onclick = function () {
+      ops.push({ op: 'writeValue', path: '', name: '', type: 'DWord', data: '1' });
+      renderOps();
+    };
+    bg.querySelector('#regTplCancel').onclick = function () { regCloseModal(bg); regOpenTemplates(); };
+    bg.querySelector('#regTplSave').onclick = function () {
+      var body = {
+        id: isEdit ? existing.id : '',
+        name: bg.querySelector('#regTplName').value.trim(),
+        category: bg.querySelector('#regTplCat').value.trim() || 'Personnalisés',
+        description: bg.querySelector('#regTplDesc').value.trim(),
+        ops: ops.map(function (o) {
+          var clean = { op: o.op, path: o.path };
+          if (o.op === 'writeValue' || o.op === 'deleteValue') clean.name = o.name == null ? '' : o.name;
+          if (o.op === 'writeValue') { clean.type = o.type || 'String'; clean.data = o.data == null ? '' : o.data; }
+          return clean;
+        }),
+      };
+      if (!body.name) return alert('Nom requis.');
+      if (!body.ops.length) return alert('Ajoute au moins une opération.');
+      for (var i = 0; i < body.ops.length; i++) {
+        if (!body.ops[i].path) return alert('Op #' + (i + 1) + ' : chemin requis.');
+      }
+      apiReg('regTemplateSave', null, body).then(function (r) {
+        if (r.error) return alert('Erreur : ' + r.error);
+        regCloseModal(bg);
+        regOpenTemplates();
+      });
+    };
   }
 
   function regApplyTemplate(tpl) {
