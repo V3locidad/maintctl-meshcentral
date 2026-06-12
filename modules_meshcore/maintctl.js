@@ -39,6 +39,7 @@ function reply(payload) {
 function consoleaction(args, rights, sessionid, parent) {
     mesh = parent;
     var fnname = args.pluginaction || (args._ && args._[1]);
+    dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
     try {
         switch (fnname) {
             case 'ping':
@@ -1376,24 +1377,43 @@ function buildExamLockScript(args) {
 }
 
 function doExamLock(args) {
+    dbg('examLock: entered (dispatchId=' + (args && args.dispatchId) + ', platform=' + process.platform + ')');
     if (process.platform !== 'win32') {
+        dbg('examLock: not windows, replying error');
         reply({ pluginaction: 'examLockResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only' });
         return;
     }
-    var script = buildExamLockScript(args);
-    runPowerShell(script, 60 * 1000, function (ok, bytes, log, note) {
-        var until = null;
-        var m = note && note.match(/locked until (.+)/);
-        if (m) until = m[1];
-        reply({
-            pluginaction: 'examLockResult',
-            dispatchId: args.dispatchId,
-            ok: ok,
-            allowCount: bytes,
-            until: until,
-            log: (log || '').slice(-2000),
+    var script;
+    try { script = buildExamLockScript(args); }
+    catch (e) {
+        dbg('examLock: buildExamLockScript threw: ' + e);
+        reply({ pluginaction: 'examLockResult', dispatchId: args.dispatchId, ok: false, error: 'buildScript: ' + e });
+        return;
+    }
+    dbg('examLock: script built (' + script.length + ' chars), invoking runPowerShell');
+    try {
+        runPowerShell(script, 50 * 1000, function (ok, bytes, log, note) {
+            dbg('examLock: runPowerShell callback fired (ok=' + ok + ', bytes=' + bytes + ', note=' + (note || '').slice(0, 200) + ')');
+            var until = null;
+            var m = note && note.match(/locked until (.+)/);
+            if (m) until = m[1];
+            try {
+                reply({
+                    pluginaction: 'examLockResult',
+                    dispatchId: args.dispatchId,
+                    ok: ok,
+                    allowCount: bytes,
+                    until: until,
+                    log: (log || '').slice(-2000),
+                });
+                dbg('examLock: reply sent');
+            } catch (e) { dbg('examLock: reply threw: ' + e); }
         });
-    });
+        dbg('examLock: runPowerShell returned (waiting for callback)');
+    } catch (e) {
+        dbg('examLock: runPowerShell threw synchronously: ' + e);
+        reply({ pluginaction: 'examLockResult', dispatchId: args.dispatchId, ok: false, error: 'runPS sync: ' + e });
+    }
 }
 
 function doExamUnlock(args) {
