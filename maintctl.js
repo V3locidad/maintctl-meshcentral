@@ -39,6 +39,9 @@ const evtWaiters = {};             // dispatchId -> { res, expires }
 const devPendingWaiters = {};      // dispatchId -> { res, expires }
 const devDetailsWaiters = {};      // dispatchId -> { res, expires }
 const devActionWaiters = {};       // dispatchId -> { res, expires }
+const examBatches = {};            // batchId -> { res, expires, kind, pending: Set<dispatchId>, results: {nodeId: {...}}, nodes: [nodeId] }
+const examDidToBatch = {};         // dispatchId -> { batchId, nodeId }
+const examLocks = {};              // nodeId -> { until, mcHosts, options, lockedAt }
 
 // Registre (ex-regctl) : dispatch + long-polling.
 //   regPending[id] = true tant qu'on attend l'agent
@@ -353,6 +356,19 @@ function markStaleRuns() {
 
 function historyPath(__dir) { return path.join(__dir, 'maintctl-history.json'); }
 
+function finishExamBatch(batchId) {
+    const batch = examBatches[batchId];
+    if (!batch) return;
+    delete examBatches[batchId];
+    try {
+        batch.res.setHeader('Content-Type', 'application/json');
+        const out = { kind: batch.kind, nodes: batch.nodes.map((nid) => ({ nodeId: nid, ...(batch.results[nid] || { ok: false, error: 'no response' }) })) };
+        out.okCount = out.nodes.filter((n) => n.ok).length;
+        out.totalCount = out.nodes.length;
+        batch.res.end(JSON.stringify(out));
+    } catch (e) {}
+}
+
 function loadHistory(__dir) {
     try {
         const raw = JSON.parse(fs.readFileSync(historyPath(__dir), 'utf8'));
@@ -638,9 +654,44 @@ module.exports.maintctl = function (parent) {
                 r.time = Date.now();
                 delete pendingDispatches[did];
             }
+            if (command.pluginaction === 'examLockResult' || command.pluginaction === 'examUnlockResult' || command.pluginaction === 'examStatusResult') {
+                const did = command.dispatchId;
+                if (did) {
+                    delete pendingDispatches[did];
+                    const ref = examDidToBatch[did];
+                    if (ref) {
+                        delete examDidToBatch[did];
+                        const batch = examBatches[ref.batchId];
+                        if (batch) {
+                            const result = {
+                                ok: !!command.ok,
+                                error: command.error || null,
+                                allowCount: command.allowCount || 0,
+                                until: command.until || null,
+                                locked: !!command.locked,
+                                ruleCount: command.ruleCount || 0,
+                            };
+                            batch.results[ref.nodeId] = result;
+                            batch.pending.delete(did);
+                            if (command.pluginaction === 'examLockResult' && command.ok) {
+                                examLocks[ref.nodeId] = { until: command.until, lockedAt: Date.now(), options: batch.options || {} };
+                            }
+                            if (command.pluginaction === 'examUnlockResult' && command.ok) {
+                                delete examLocks[ref.nodeId];
+                            }
+                            if (batch.pending.size === 0) finishExamBatch(ref.batchId);
+                        }
+                    }
+                }
+            }
             const now = Date.now();
             Object.keys(pendingDispatches).forEach((k) => {
                 if (pendingDispatches[k].expires < now) delete pendingDispatches[k];
+            });
+            // Nettoyage des verrous expirés (auto-unlock côté agent via schtasks)
+            Object.keys(examLocks).forEach((nid) => {
+                const u = examLocks[nid].until ? Date.parse(examLocks[nid].until) : 0;
+                if (u && u < now) delete examLocks[nid];
             });
             saveHistory(__dir);
         } catch (e) {
@@ -1199,6 +1250,96 @@ module.exports.maintctl = function (parent) {
                 } catch (_) {}
             }, 120 * 1000);
             return;
+        }
+
+        // ----- EXAM MODE -----
+        if (action === 'examLock' || action === 'examUnlock' || action === 'examStatus') {
+            let body = {};
+            try { body = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            const nodes = Array.isArray(body.nodes) ? body.nodes.filter((n) => typeof n === 'string') : [];
+            if (!nodes.length) return sendJson(res, 400, { error: 'aucun poste sélectionné' });
+
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const batchId = 'exb-' + crypto.randomBytes(6).toString('hex');
+            const pa = (action === 'examLock') ? 'examLock' : (action === 'examUnlock') ? 'examUnlock' : 'examStatus';
+            const timeoutMs = (action === 'examStatus') ? 20 * 1000 : 90 * 1000;
+
+            // Hôtes MC à whitelister : on prend l'host de la requête (le serveur lui-même)
+            // + ce que l'utilisateur a éventuellement précisé.
+            const reqHost = (req.headers && req.headers.host || '').split(':')[0];
+            const mcHostsExtra = Array.isArray(body.mcHosts) ? body.mcHosts.filter((h) => typeof h === 'string' && h) : [];
+            const mcHosts = Array.from(new Set([reqHost, ...mcHostsExtra].filter(Boolean)));
+
+            const customAllow = Array.isArray(body.customAllow) ? body.customAllow.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim()) : [];
+            const allowLan = !!body.allowLan;
+            const allowDns = (body.allowDns !== false);
+            const durationMin = Math.max(1, Math.min(24 * 60, parseInt(body.durationMin, 10) || 120));
+
+            const batch = {
+                kind: pa,
+                res: res,
+                expires: Date.now() + timeoutMs + 5000,
+                pending: new Set(),
+                results: {},
+                nodes: nodes,
+                options: { allowLan: allowLan, allowDns: allowDns, customAllow: customAllow, durationMin: durationMin, mcHosts: mcHosts },
+            };
+            examBatches[batchId] = batch;
+
+            nodes.forEach((nid) => {
+                const ws = wsagents[nid];
+                if (!ws || typeof ws.send !== 'function') {
+                    batch.results[nid] = { ok: false, error: 'offline' };
+                    return;
+                }
+                const did = 'ex-' + crypto.randomBytes(8).toString('hex');
+                pendingDispatches[did] = { kind: pa, nodeId: nid, expires: Date.now() + timeoutMs };
+                examDidToBatch[did] = { batchId: batchId, nodeId: nid };
+                batch.pending.add(did);
+                const payload = {
+                    action: 'plugin', plugin: 'maintctl', pluginaction: pa,
+                    dispatchId: did,
+                };
+                if (pa === 'examLock') {
+                    payload.mcHosts = mcHosts;
+                    payload.allowLan = allowLan;
+                    payload.allowDns = allowDns;
+                    payload.customAllow = customAllow;
+                    payload.durationMin = durationMin;
+                }
+                try { ws.send(JSON.stringify(payload)); }
+                catch (e) {
+                    batch.results[nid] = { ok: false, error: 'dispatch failed: ' + e.message };
+                    batch.pending.delete(did);
+                    delete pendingDispatches[did];
+                    delete examDidToBatch[did];
+                }
+            });
+
+            if (batch.pending.size === 0) { finishExamBatch(batchId); return; }
+            setTimeout(() => {
+                const b = examBatches[batchId];
+                if (!b) return;
+                b.pending.forEach((did) => {
+                    const ref = examDidToBatch[did];
+                    if (ref && !b.results[ref.nodeId]) b.results[ref.nodeId] = { ok: false, error: 'agent timeout' };
+                    delete examDidToBatch[did];
+                    delete pendingDispatches[did];
+                });
+                b.pending.clear();
+                finishExamBatch(batchId);
+            }, timeoutMs);
+            return;
+        }
+
+        if (action === 'examLocksList') {
+            const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+            const out = {};
+            Object.keys(examLocks).forEach((nid) => {
+                out[nid] = Object.assign({ online: !!wsagents[nid] }, examLocks[nid]);
+            });
+            return sendJson(res, 200, { locks: out });
         }
 
         if (action === 'devList') {

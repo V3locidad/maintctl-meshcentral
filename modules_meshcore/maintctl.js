@@ -69,6 +69,9 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'regDeleteValue': regRunPs(args, regPsDeleteValue(args.path, args.name)); return 'regDeleteValue started';
             case 'regDeleteKey':   regRunPs(args, regPsDeleteKey(args.path)); return 'regDeleteKey started';
             case 'regCreateKey':   regRunPs(args, regPsCreateKey(args.path)); return 'regCreateKey started';
+            case 'examLock':       doExamLock(args); return 'examLock started';
+            case 'examUnlock':     doExamUnlock(args); return 'examUnlock started';
+            case 'examStatus':     doExamStatus(args); return 'examStatus started';
             default:
                 return 'maintctl: action inconnue ' + fnname;
         }
@@ -1265,4 +1268,172 @@ function regRunPs(args, script) {
         try { fs.unlinkSync(psPath); } catch (e) {}
         reply({ pluginaction: 'regResult', dispatchId: dispatchId, ok: false, error: 'timeout' });
     }, 60 * 1000);
+}
+
+// ============================================================
+// EXAM MODE — coupure internet par règles Windows Firewall
+// ============================================================
+//
+// Stratégie :
+//   - une règle "block outbound any" nommée MAINTCTL_EXAM_BLOCK_ALL
+//   - des règles "allow outbound" MAINTCTL_EXAM_ALLOW_* (MC, DNS, LAN, custom)
+//   - Windows Firewall : Allow l'emporte sur Block quand les deux matchent,
+//     donc la whitelist passe et le reste est bloqué.
+//   - une tâche planifiée MAINTCTL_EXAM_UNLOCK déclenche le déverrouillage
+//     automatique au bout de durationMin (filet de sécurité si on oublie).
+//
+// IMPORTANT : on whitelist TOUJOURS les serveurs MeshCentral fournis par
+// le serveur, sinon plus moyen de débloquer à distance.
+
+function jsArrayToPsList(arr) {
+    if (!arr || !arr.length) return '@()';
+    var quoted = arr.map(function (x) { return "'" + String(x).replace(/'/g, "''") + "'"; });
+    return '@(' + quoted.join(',') + ')';
+}
+
+function buildExamLockScript(args) {
+    var mcHosts = Array.isArray(args.mcHosts) ? args.mcHosts : [];
+    var customAllow = Array.isArray(args.customAllow) ? args.customAllow : [];
+    var allowLan = !!args.allowLan;
+    var allowDns = (args.allowDns !== false); // par défaut oui
+    var durationMin = parseInt(args.durationMin, 10) || 120;
+
+    return ''
+        + '$ErrorActionPreference = "Continue";'
+        + '$prefix = "MAINTCTL_EXAM_";'
+        // Nettoie les éventuelles règles précédentes
+        + 'Get-NetFirewallRule -DisplayName "$prefix*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue;'
+        + 'schtasks /Delete /TN "MAINTCTL_EXAM_UNLOCK" /F 2>$null | Out-Null;'
+        + ''
+        + '$allow = New-Object System.Collections.Generic.List[string];'
+        // MC hosts (résolution DNS)
+        + '$mcHosts = ' + jsArrayToPsList(mcHosts) + ';'
+        + 'foreach ($h in $mcHosts) {'
+        + '  try {'
+        + '    if ($h -match "^[\\d\\.]+$") { $allow.Add($h) }'
+        + '    else {'
+        + '      $ips = Resolve-DnsName -Name $h -Type A -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress} | Select-Object -ExpandProperty IPAddress;'
+        + '      foreach ($ip in $ips) { $allow.Add($ip) }'
+        + '    }'
+        + '  } catch {}'
+        + '}'
+        // DNS locaux
+        + (allowDns
+            ? '$dns = Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.ServerAddresses } | Where-Object { $_ -and $_ -ne "127.0.0.1" } | Sort-Object -Unique;'
+            + 'foreach ($d in $dns) { $allow.Add($d) }'
+            : '')
+        // LAN local : on calcule le subnet CIDR
+        + ($allowLan
+            ? '$nets = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne "WellKnown" -and $_.IPAddress -notlike "169.*" -and $_.IPAddress -ne "127.0.0.1" };'
+            + 'foreach ($n in $nets) {'
+            + '  $ipBytes = [System.Net.IPAddress]::Parse($n.IPAddress).GetAddressBytes();'
+            + '  $mask = [uint32]0xFFFFFFFF -shl (32 - $n.PrefixLength);'
+            + '  $maskBytes = @( ($mask -shr 24) -band 0xFF, ($mask -shr 16) -band 0xFF, ($mask -shr 8) -band 0xFF, $mask -band 0xFF );'
+            + '  $netBytes = @(); for ($i=0; $i -lt 4; $i++) { $netBytes += ($ipBytes[$i] -band $maskBytes[$i]) }'
+            + '  $cidr = ($netBytes -join ".") + "/" + $n.PrefixLength;'
+            + '  $allow.Add($cidr)'
+            + '}'
+            : '')
+        // Custom (IP, CIDR, hostnames)
+        + '$custom = ' + jsArrayToPsList(customAllow) + ';'
+        + 'foreach ($c in $custom) {'
+        + '  if ($c -match "^[\\d\\.]+(/\\d+)?$") { $allow.Add($c) }'
+        + '  else {'
+        + '    try {'
+        + '      $ips = Resolve-DnsName -Name $c -Type A -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress} | Select-Object -ExpandProperty IPAddress;'
+        + '      foreach ($ip in $ips) { $allow.Add($ip) }'
+        + '    } catch {}'
+        + '  }'
+        + '}'
+        + '$allowUnique = $allow | Sort-Object -Unique;'
+        // Crée allow rules
+        + '$i = 0;'
+        + 'foreach ($a in $allowUnique) {'
+        + '  $i++;'
+        + '  try {'
+        + '    New-NetFirewallRule -DisplayName ("$prefix" + "ALLOW_" + $i) -Direction Outbound -Action Allow -RemoteAddress $a -Profile Any -ErrorAction SilentlyContinue | Out-Null'
+        + '  } catch {}'
+        + '}'
+        // Allow loopback explicitement (par sécurité)
+        + 'try { New-NetFirewallRule -DisplayName "${prefix}ALLOW_LOOPBACK" -Direction Outbound -Action Allow -RemoteAddress 127.0.0.0/8 -Profile Any -ErrorAction SilentlyContinue | Out-Null } catch {}'
+        // Bloc all outbound
+        + 'try { New-NetFirewallRule -DisplayName "${prefix}BLOCK_ALL" -Direction Outbound -Action Block -RemoteAddress Any -Profile Any -ErrorAction SilentlyContinue | Out-Null } catch {}'
+        // Tâche planifiée auto-unlock
+        + '$dur = ' + durationMin + ';'
+        + '$at = (Get-Date).AddMinutes($dur);'
+        + '$atStr = $at.ToString("HH:mm");'
+        + '$atDate = $at.ToString("dd/MM/yyyy");'
+        + '$cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\"Get-NetFirewallRule -DisplayName MAINTCTL_EXAM_* | Remove-NetFirewallRule; schtasks /Delete /TN MAINTCTL_EXAM_UNLOCK /F\\"";'
+        + 'schtasks /Create /TN "MAINTCTL_EXAM_UNLOCK" /TR $cmd /SC ONCE /ST $atStr /SD $atDate /RU SYSTEM /F 2>$null | Out-Null;'
+        // Sortie
+        + '$count = ($allowUnique | Measure-Object).Count;'
+        + 'Write-Host ("RESULT:" + $count + ":locked until " + $at.ToString("yyyy-MM-ddTHH:mm:ss"))';
+}
+
+function doExamLock(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'examLockResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var script = buildExamLockScript(args);
+    runPowerShell(script, 60 * 1000, function (ok, bytes, log, note) {
+        var until = null;
+        var m = note && note.match(/locked until (.+)/);
+        if (m) until = m[1];
+        reply({
+            pluginaction: 'examLockResult',
+            dispatchId: args.dispatchId,
+            ok: ok,
+            allowCount: bytes,
+            until: until,
+            log: (log || '').slice(-2000),
+        });
+    });
+}
+
+function doExamUnlock(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'examUnlockResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var script = ''
+        + '$ErrorActionPreference = "Continue";'
+        + 'Get-NetFirewallRule -DisplayName "MAINTCTL_EXAM_*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue;'
+        + 'schtasks /Delete /TN "MAINTCTL_EXAM_UNLOCK" /F 2>$null | Out-Null;'
+        + 'Write-Host "RESULT:0:unlocked"';
+    runPowerShell(script, 30 * 1000, function (ok, bytes, log, note) {
+        reply({
+            pluginaction: 'examUnlockResult',
+            dispatchId: args.dispatchId,
+            ok: ok,
+            log: (log || '').slice(-1000),
+        });
+    });
+}
+
+function doExamStatus(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'examStatusResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only' });
+        return;
+    }
+    var script = ''
+        + '$ErrorActionPreference = "Continue";'
+        + '$rules = Get-NetFirewallRule -DisplayName "MAINTCTL_EXAM_*" -ErrorAction SilentlyContinue;'
+        + '$count = ($rules | Measure-Object).Count;'
+        + '$until = "";'
+        + 'try {'
+        + '  $t = schtasks /Query /TN "MAINTCTL_EXAM_UNLOCK" /FO CSV /V 2>$null | ConvertFrom-Csv | Select-Object -First 1;'
+        + '  if ($t) { $until = $t."Next Run Time" }'
+        + '} catch {}'
+        + 'Write-Host ("RESULT:" + $count + ":" + $until)';
+    runPowerShell(script, 15 * 1000, function (ok, bytes, log, note) {
+        reply({
+            pluginaction: 'examStatusResult',
+            dispatchId: args.dispatchId,
+            ok: ok,
+            locked: bytes > 0,
+            ruleCount: bytes,
+            until: note || '',
+        });
+    });
 }

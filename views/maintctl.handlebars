@@ -240,6 +240,7 @@
   <div class="tab" data-tab="events">Événements</div>
   <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
   <div class="tab" data-tab="registry">Registre</div>
+  <div class="tab" data-tab="exam">Examen <span id="examLockedBadge" class="alertBadge" style="display:none">0</span></div>
 </div>
 
 <!-- ============ TAB NETTOYAGE ============ -->
@@ -462,6 +463,80 @@
         <div class="regEmpty">Sélectionne une clé pour voir ses valeurs.</div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ============ TAB EXAMEN ============ -->
+<div id="panel-exam" class="panel">
+  <div class="bar">
+    <button id="examRefreshBtn">Rafraîchir</button>
+    <span id="examSelCount" class="pill">0 poste(s) sélectionné(s)</span>
+    <span id="examLockedCount" class="pill" style="background:#fff3cd;color:#856404;display:none"></span>
+    <span style="flex:1"></span>
+    <button id="examLockBtn" class="primary" disabled style="background:#d9534f;color:#fff">🔒 Verrouiller examen</button>
+    <button id="examUnlockBtn" disabled>🔓 Déverrouiller sélection</button>
+    <button id="examUnlockAllBtn" title="Déverrouille tous les postes actuellement verrouillés">⚠ Tout déverrouiller</button>
+  </div>
+
+  <div class="cols">
+    <div class="col">
+      <h3>Postes <span id="examAgentsCount" class="pill">0</span><span class="spacer"></span>
+        <label style="font-weight:normal;font-size:11px"><input type="checkbox" id="examOnlineOnly" checked> en ligne</label>
+        <button id="examSelectAllBtn">Tout</button>
+        <button id="examSelectNoneBtn">Aucun</button>
+      </h3>
+      <div class="search"><input id="examSearchAgents" placeholder="Rechercher (nom, salle)"></div>
+      <div class="body" id="examAgentsBody"><div class="empty">Chargement…</div></div>
+    </div>
+
+    <div class="col tasks">
+      <h3>Options de verrouillage</h3>
+      <div class="taskGroup">
+        <label style="background:#f6f8fa">
+          <input type="checkbox" checked disabled>
+          <div>Toujours autorisé
+            <div class="desc">Serveur MeshCentral (détecté automatiquement) — sinon plus moyen de débloquer à distance.</div>
+          </div>
+        </label>
+        <label>
+          <input type="checkbox" id="examAllowDns" checked>
+          <div>DNS locaux
+            <div class="desc">Serveurs DNS configurés sur la carte réseau (sinon plus rien ne résout, y compris MC).</div>
+          </div>
+        </label>
+        <label>
+          <input type="checkbox" id="examAllowLan">
+          <div>LAN local
+            <div class="desc">Tout le subnet local du poste (imprimantes, AD, serveur d'épreuve interne, partages).</div>
+          </div>
+        </label>
+        <label>
+          <input type="checkbox" id="examAllowCustomChk">
+          <div>Whitelist personnalisée
+            <div class="desc">
+              IPs, CIDR ou hostnames séparés par virgule ou retour ligne.
+              <textarea id="examAllowCustom" rows="3" placeholder="ex: examen.lycee.local, 10.20.0.0/16, 8.8.8.8" style="width:100%;margin-top:4px;font-family:Menlo,Consolas,monospace;font-size:11px" onclick="event.stopPropagation()"></textarea>
+            </div>
+          </div>
+        </label>
+        <label>
+          <input type="checkbox" checked disabled>
+          <div>Durée du verrouillage
+            <div class="desc">
+              Auto-unlock après
+              <input id="examDuration" type="number" value="120" min="5" max="1440" style="width:60px;font-size:11px;padding:1px 4px" onclick="event.stopPropagation()"> minutes (filet de sécurité Windows si on oublie de déverrouiller).
+            </div>
+          </div>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div id="examResults" class="results" style="display:none">
+    <table>
+      <thead><tr><th>Poste</th><th>Salle</th><th>Action</th><th>Statut</th><th>Whitelist</th><th>Détail</th></tr></thead>
+      <tbody id="examResultsBody"></tbody>
+    </table>
   </div>
 </div>
 
@@ -2710,6 +2785,221 @@ refreshAgents().then(function () {
     if (regLoaded) return;
     regLoaded = true;
     regLoadAgents();
+  });
+})();
+
+// =================================================================
+// ============== ONGLET EXAMEN (coupure internet) =================
+// =================================================================
+(function () {
+  var examSelected = {};
+  var examLocks = {};
+  var examLoaded = false;
+
+  function $$(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  function updateExamSelCount() {
+    var n = Object.keys(examSelected).length;
+    $$('examSelCount').textContent = n + ' poste(s) sélectionné(s)';
+    $$('examLockBtn').disabled = !n;
+    $$('examUnlockBtn').disabled = !n;
+  }
+
+  function updateLockedBadge() {
+    var n = Object.keys(examLocks).length;
+    var b = $$('examLockedBadge');
+    if (n > 0) { b.textContent = n; b.style.display = ''; }
+    else b.style.display = 'none';
+    var pill = $$('examLockedCount');
+    if (n > 0) { pill.textContent = '🔒 ' + n + ' poste(s) verrouillé(s)'; pill.style.display = ''; }
+    else pill.style.display = 'none';
+  }
+
+  function renderExamAgents() {
+    var onlineOnly = $$('examOnlineOnly').checked;
+    var q = ($$('examSearchAgents').value || '').toLowerCase();
+    var filtered = agents.filter(function (a) {
+      if (onlineOnly && !a.online) return false;
+      if (a.family && a.family !== 'Windows') return false;
+      if (!q) return true;
+      return (a.name || '').toLowerCase().indexOf(q) >= 0 || (a.mesh || '').toLowerCase().indexOf(q) >= 0;
+    });
+    // Tri par salle puis nom
+    filtered.sort(function (a, b) {
+      var ma = (a.mesh || '').toLowerCase(), mb = (b.mesh || '').toLowerCase();
+      if (ma < mb) return -1; if (ma > mb) return 1;
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+    $$('examAgentsCount').textContent = filtered.length + ' / ' + agents.length;
+    var body = $$('examAgentsBody');
+    if (!filtered.length) { body.innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
+    var html = '';
+    var lastMesh = null;
+    filtered.forEach(function (a) {
+      if (a.mesh !== lastMesh) {
+        lastMesh = a.mesh;
+        var meshNodes = filtered.filter(function (x) { return x.mesh === a.mesh; });
+        var allSel = meshNodes.every(function (x) { return examSelected[x.id]; });
+        html += '<div style="padding:4px 8px;background:#eef4fb;font-size:11px;font-weight:600;border-top:1px solid #ddd;display:flex;align-items:center;gap:6px">'
+              + '<input type="checkbox" class="examMeshCheck" data-mesh="' + esc(a.mesh) + '"' + (allSel ? ' checked' : '') + '>'
+              + '<span style="flex:1">' + esc(a.mesh || '?') + ' <span style="color:#888;font-weight:normal">(' + meshNodes.length + ')</span></span>'
+              + '</div>';
+      }
+      var sel = !!examSelected[a.id];
+      var locked = !!examLocks[a.id];
+      html += '<div class="row' + (sel ? ' selected' : '') + '" data-id="' + a.id + '">'
+            + '<input type="checkbox"' + (sel ? ' checked' : '') + '>'
+            + '<span class="statusDot ' + (a.online ? 'on' : 'off') + '"></span>'
+            + '<div class="main">'
+            + '<div class="title">' + esc(a.name) + (locked ? ' <span class="badge" style="background:#d9534f;color:#fff">🔒 verrouillé</span>' : '') + '</div>'
+            + '<div class="sub"><span class="badge">' + esc(a.mesh || '?') + '</span>'
+            + (locked && examLocks[a.id].until ? '<span class="badge" style="background:#fff3cd;color:#856404">jusqu\'à ' + esc(examLocks[a.id].until) + '</span>' : '')
+            + '</div></div></div>';
+    });
+    body.innerHTML = html;
+    Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
+      row.addEventListener('click', function () {
+        var id = row.getAttribute('data-id');
+        examSelected[id] = !examSelected[id];
+        if (!examSelected[id]) delete examSelected[id];
+        updateExamSelCount();
+        renderExamAgents();
+      });
+    });
+    Array.prototype.forEach.call(body.querySelectorAll('.examMeshCheck'), function (cb) {
+      cb.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var mesh = cb.getAttribute('data-mesh');
+        var meshNodes = filtered.filter(function (x) { return x.mesh === mesh; });
+        var allSel = meshNodes.every(function (x) { return examSelected[x.id]; });
+        meshNodes.forEach(function (x) {
+          if (allSel) delete examSelected[x.id];
+          else examSelected[x.id] = true;
+        });
+        updateExamSelCount();
+        renderExamAgents();
+      });
+    });
+  }
+
+  function loadExamLocks() {
+    return fetch(BASE + '&action=examLocksList', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        examLocks = (j && j.locks) || {};
+        updateLockedBadge();
+        renderExamAgents();
+      }).catch(function () {});
+  }
+
+  function buildPayload(extraNodes) {
+    var nodes = extraNodes || Object.keys(examSelected);
+    var customRaw = $$('examAllowCustom').value || '';
+    var custom = [];
+    if ($$('examAllowCustomChk').checked) {
+      custom = customRaw.split(/[\s,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    return {
+      nodes: nodes,
+      allowLan: $$('examAllowLan').checked,
+      allowDns: $$('examAllowDns').checked,
+      customAllow: custom,
+      durationMin: parseInt($$('examDuration').value, 10) || 120,
+    };
+  }
+
+  function renderExamResults(j) {
+    if (!j || !j.nodes) return;
+    var box = $$('examResults'); box.style.display = '';
+    var tbody = $$('examResultsBody');
+    var rows = '';
+    j.nodes.forEach(function (n) {
+      var a = agents.filter(function (x) { return x.id === n.nodeId; })[0] || {};
+      var statusCell = n.ok
+        ? '<span style="color:#2ecc40;font-weight:600">✓ ' + esc(j.kind) + '</span>'
+        : '<span style="color:#d9534f;font-weight:600">✗ ' + esc(n.error || 'erreur') + '</span>';
+      var wl = n.allowCount ? (n.allowCount + ' règles allow') : '—';
+      var detail = n.until ? ('jusqu\'à ' + esc(n.until)) : (n.ruleCount ? (n.ruleCount + ' règles actives') : '');
+      rows += '<tr><td>' + esc(a.name || n.nodeId) + '</td><td>' + esc(a.mesh || '?') + '</td>'
+            + '<td>' + esc(j.kind) + '</td><td>' + statusCell + '</td>'
+            + '<td>' + wl + '</td><td>' + detail + '</td></tr>';
+    });
+    tbody.innerHTML = rows;
+  }
+
+  function doExamAction(action) {
+    var nodes = Object.keys(examSelected);
+    if (!nodes.length) return alert('Aucun poste sélectionné.');
+    if (action === 'examLock') {
+      var dur = parseInt($$('examDuration').value, 10) || 120;
+      if (!confirm('Verrouiller internet sur ' + nodes.length + ' poste(s) pour ' + dur + ' min ?\n\nLe serveur MeshCentral et les DNS locaux resteront accessibles.')) return;
+    }
+    $$('examLockBtn').disabled = true; $$('examUnlockBtn').disabled = true;
+    var payload = buildPayload(nodes);
+    fetch(BASE + '&action=' + action + '&payload=' + encodeURIComponent(JSON.stringify(payload)), { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        renderExamResults(j);
+        return loadExamLocks();
+      })
+      .catch(function (e) { alert('Erreur: ' + e.message); })
+      .then(function () { updateExamSelCount(); });
+  }
+
+  function doUnlockAll() {
+    var nodes = Object.keys(examLocks);
+    if (!nodes.length) return alert('Aucun poste verrouillé.');
+    if (!confirm('Déverrouiller les ' + nodes.length + ' poste(s) actuellement verrouillés ?')) return;
+    var payload = buildPayload(nodes);
+    fetch(BASE + '&action=examUnlock&payload=' + encodeURIComponent(JSON.stringify(payload)), { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { renderExamResults(j); return loadExamLocks(); })
+      .catch(function (e) { alert('Erreur: ' + e.message); });
+  }
+
+  function loadExamTab() {
+    if (typeof loadAgents === 'function' && !agents.length) {
+      // Si l'onglet nettoyage n'a pas encore chargé les agents, on les charge ici aussi.
+      loadAgents();
+    }
+    renderExamAgents();
+    loadExamLocks();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var examTab = document.querySelector('.tab[data-tab="exam"]');
+    if (!examTab) return;
+    examTab.addEventListener('click', function () {
+      if (!examLoaded) { examLoaded = true; loadExamTab(); }
+      else { renderExamAgents(); loadExamLocks(); }
+    });
+    $$('examRefreshBtn').addEventListener('click', loadExamTab);
+    $$('examSearchAgents').addEventListener('input', renderExamAgents);
+    $$('examOnlineOnly').addEventListener('change', renderExamAgents);
+    $$('examSelectAllBtn').addEventListener('click', function () {
+      var onlineOnly = $$('examOnlineOnly').checked;
+      agents.forEach(function (a) {
+        if (onlineOnly && !a.online) return;
+        if (a.family && a.family !== 'Windows') return;
+        examSelected[a.id] = true;
+      });
+      updateExamSelCount(); renderExamAgents();
+    });
+    $$('examSelectNoneBtn').addEventListener('click', function () {
+      examSelected = {}; updateExamSelCount(); renderExamAgents();
+    });
+    $$('examLockBtn').addEventListener('click', function () { doExamAction('examLock'); });
+    $$('examUnlockBtn').addEventListener('click', function () { doExamAction('examUnlock'); });
+    $$('examUnlockAllBtn').addEventListener('click', doUnlockAll);
+    // Refresh locks toutes les 30s pour suivre les expirations
+    setInterval(function () { if (examLoaded) loadExamLocks(); }, 30000);
+    // Charge les verrous au démarrage pour afficher le badge
+    loadExamLocks();
   });
 })();
 </script>
