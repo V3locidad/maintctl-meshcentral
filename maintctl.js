@@ -1263,7 +1263,7 @@ module.exports.maintctl = function (parent) {
             const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
             const batchId = 'exb-' + crypto.randomBytes(6).toString('hex');
             const pa = (action === 'examLock') ? 'examLock' : (action === 'examUnlock') ? 'examUnlock' : 'examStatus';
-            const timeoutMs = (action === 'examStatus') ? 15 * 1000 : 25 * 1000;
+            const timeoutMs = (action === 'examStatus') ? 20 * 1000 : 60 * 1000;
 
             // Hôtes MC à whitelister : on prend l'host de la requête (le serveur lui-même)
             // + ce que l'utilisateur a éventuellement précisé.

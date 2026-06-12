@@ -1303,8 +1303,7 @@ function buildExamLockScript(args) {
     return ''
         + '$ErrorActionPreference = "Continue";'
         + '$prefix = "MAINTCTL_EXAM_";'
-        // Nettoie les éventuelles règles précédentes
-        + 'Get-NetFirewallRule -DisplayName "$prefix*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue;'
+        // Nettoyage tâche planifiée précédente (les règles seront purgées plus bas)
         + 'schtasks /Delete /TN "MAINTCTL_EXAM_UNLOCK" /F 2>$null | Out-Null;'
         + ''
         + '$allow = New-Object System.Collections.Generic.List[string];'
@@ -1348,24 +1347,28 @@ function buildExamLockScript(args) {
         + '  }'
         + '}'
         + '$allowUnique = $allow | Sort-Object -Unique;'
+        // On utilise netsh (instantané) au lieu de New-NetFirewallRule (charge le module NetSecurity, 10-30s).
+        // Nettoyage préventif (silencieux si la règle n'existe pas)
+        + '1..50 | ForEach-Object { & netsh advfirewall firewall delete rule name=($prefix + "ALLOW_" + $_) 2>$null | Out-Null };'
+        + '& netsh advfirewall firewall delete rule name=($prefix + "ALLOW_LOOPBACK") 2>$null | Out-Null;'
+        + '& netsh advfirewall firewall delete rule name=($prefix + "BLOCK_ALL") 2>$null | Out-Null;'
         // Crée allow rules
         + '$i = 0;'
         + 'foreach ($a in $allowUnique) {'
         + '  $i++;'
-        + '  try {'
-        + '    New-NetFirewallRule -DisplayName ("$prefix" + "ALLOW_" + $i) -Direction Outbound -Action Allow -RemoteAddress $a -Profile Any -ErrorAction SilentlyContinue | Out-Null'
-        + '  } catch {}'
+        + '  $n = $prefix + "ALLOW_" + $i;'
+        + '  & netsh advfirewall firewall add rule name="$n" dir=out action=allow remoteip="$a" profile=any | Out-Null'
         + '}'
-        // Allow loopback explicitement (par sécurité)
-        + 'try { New-NetFirewallRule -DisplayName "${prefix}ALLOW_LOOPBACK" -Direction Outbound -Action Allow -RemoteAddress 127.0.0.0/8 -Profile Any -ErrorAction SilentlyContinue | Out-Null } catch {}'
+        // Allow loopback explicitement
+        + '& netsh advfirewall firewall add rule name=($prefix + "ALLOW_LOOPBACK") dir=out action=allow remoteip=127.0.0.0/8 profile=any | Out-Null;'
         // Bloc all outbound
-        + 'try { New-NetFirewallRule -DisplayName "${prefix}BLOCK_ALL" -Direction Outbound -Action Block -RemoteAddress Any -Profile Any -ErrorAction SilentlyContinue | Out-Null } catch {}'
+        + '& netsh advfirewall firewall add rule name=($prefix + "BLOCK_ALL") dir=out action=block remoteip=any profile=any | Out-Null;'
         // Tâche planifiée auto-unlock
         + '$dur = ' + durationMin + ';'
         + '$at = (Get-Date).AddMinutes($dur);'
         + '$atStr = $at.ToString("HH:mm");'
         + '$atDate = $at.ToString("dd/MM/yyyy");'
-        + '$cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\"Get-NetFirewallRule -DisplayName MAINTCTL_EXAM_* | Remove-NetFirewallRule; schtasks /Delete /TN MAINTCTL_EXAM_UNLOCK /F\\"";'
+        + '$cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \\"$p=\'MAINTCTL_EXAM_\'; 1..50 | ForEach-Object { & netsh advfirewall firewall delete rule name=($p + \'ALLOW_\' + $_) | Out-Null }; & netsh advfirewall firewall delete rule name=($p + \'ALLOW_LOOPBACK\') | Out-Null; & netsh advfirewall firewall delete rule name=($p + \'BLOCK_ALL\') | Out-Null; schtasks /Delete /TN MAINTCTL_EXAM_UNLOCK /F\\"";'
         + 'schtasks /Create /TN "MAINTCTL_EXAM_UNLOCK" /TR $cmd /SC ONCE /ST $atStr /SD $atDate /RU SYSTEM /F 2>$null | Out-Null;'
         // Sortie
         + '$count = ($allowUnique | Measure-Object).Count;'
@@ -1400,7 +1403,10 @@ function doExamUnlock(args) {
     }
     var script = ''
         + '$ErrorActionPreference = "Continue";'
-        + 'Get-NetFirewallRule -DisplayName "MAINTCTL_EXAM_*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue;'
+        + '$prefix = "MAINTCTL_EXAM_";'
+        + '1..50 | ForEach-Object { & netsh advfirewall firewall delete rule name=($prefix + "ALLOW_" + $_) 2>$null | Out-Null };'
+        + '& netsh advfirewall firewall delete rule name=($prefix + "ALLOW_LOOPBACK") 2>$null | Out-Null;'
+        + '& netsh advfirewall firewall delete rule name=($prefix + "BLOCK_ALL") 2>$null | Out-Null;'
         + 'schtasks /Delete /TN "MAINTCTL_EXAM_UNLOCK" /F 2>$null | Out-Null;'
         + 'Write-Host "RESULT:0:unlocked"';
     runPowerShell(script, 30 * 1000, function (ok, bytes, log, note) {
@@ -1420,8 +1426,8 @@ function doExamStatus(args) {
     }
     var script = ''
         + '$ErrorActionPreference = "Continue";'
-        + '$rules = Get-NetFirewallRule -DisplayName "MAINTCTL_EXAM_*" -ErrorAction SilentlyContinue;'
-        + '$count = ($rules | Measure-Object).Count;'
+        + '$out = & netsh advfirewall firewall show rule name=all 2>$null;'
+        + '$count = ($out | Select-String "MAINTCTL_EXAM_").Count;'
         + '$until = "";'
         + 'try {'
         + '  $t = schtasks /Query /TN "MAINTCTL_EXAM_UNLOCK" /FO CSV /V 2>$null | ConvertFrom-Csv | Select-Object -First 1;'
