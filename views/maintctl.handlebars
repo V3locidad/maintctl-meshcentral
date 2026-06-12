@@ -2971,36 +2971,33 @@ refreshAgents().then(function () {
     loadExamLocks();
   }
 
-  document.addEventListener('DOMContentLoaded', function () {
-    var examTab = document.querySelector('.tab[data-tab="exam"]');
-    if (!examTab) return;
+  var examTab = document.querySelector('.tab[data-tab="exam"]');
+  if (examTab) {
     examTab.addEventListener('click', function () {
       if (!examLoaded) { examLoaded = true; loadExamTab(); }
       else { renderExamAgents(); loadExamLocks(); }
     });
-    $$('examRefreshBtn').addEventListener('click', loadExamTab);
-    $$('examSearchAgents').addEventListener('input', renderExamAgents);
-    $$('examOnlineOnly').addEventListener('change', renderExamAgents);
-    $$('examSelectAllBtn').addEventListener('click', function () {
-      var onlineOnly = $$('examOnlineOnly').checked;
-      agents.forEach(function (a) {
-        if (onlineOnly && !a.online) return;
-        if (a.family && a.family !== 'Windows') return;
-        examSelected[a.id] = true;
-      });
-      updateExamSelCount(); renderExamAgents();
+  }
+  $$('examRefreshBtn').addEventListener('click', loadExamTab);
+  $$('examSearchAgents').addEventListener('input', renderExamAgents);
+  $$('examOnlineOnly').addEventListener('change', renderExamAgents);
+  $$('examSelectAllBtn').addEventListener('click', function () {
+    var onlineOnly = $$('examOnlineOnly').checked;
+    agents.forEach(function (a) {
+      if (onlineOnly && !a.online) return;
+      if (a.family && a.family !== 'Windows') return;
+      examSelected[a.id] = true;
     });
-    $$('examSelectNoneBtn').addEventListener('click', function () {
-      examSelected = {}; updateExamSelCount(); renderExamAgents();
-    });
-    $$('examLockBtn').addEventListener('click', function () { doExamAction('examLock'); });
-    $$('examUnlockBtn').addEventListener('click', function () { doExamAction('examUnlock'); });
-    $$('examUnlockAllBtn').addEventListener('click', doUnlockAll);
-    // Refresh locks toutes les 30s pour suivre les expirations
-    setInterval(function () { if (examLoaded) loadExamLocks(); }, 30000);
-    // Charge les verrous au démarrage pour afficher le badge
-    loadExamLocks();
+    updateExamSelCount(); renderExamAgents();
   });
+  $$('examSelectNoneBtn').addEventListener('click', function () {
+    examSelected = {}; updateExamSelCount(); renderExamAgents();
+  });
+  $$('examLockBtn').addEventListener('click', function () { doExamAction('examLock'); });
+  $$('examUnlockBtn').addEventListener('click', function () { doExamAction('examUnlock'); });
+  $$('examUnlockAllBtn').addEventListener('click', doUnlockAll);
+  setInterval(function () { if (examLoaded) loadExamLocks(); }, 30000);
+  loadExamLocks();
 })();
 </script>
 
