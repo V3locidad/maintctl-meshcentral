@@ -73,6 +73,8 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'examUnlock':     doExamUnlock(args); return 'examUnlock started';
             case 'examStatus':     doExamStatus(args); return 'examStatus started';
             default:
+                // Répond toujours pour que le serveur ne reste pas en attente.
+                try { reply({ pluginaction: 'unknownAction', dispatchId: args && args.dispatchId, ok: false, error: 'action inconnue côté agent: ' + fnname + ' (module peut-être obsolète, redémarre l\'agent)' }); } catch (e) {}
                 return 'maintctl: action inconnue ' + fnname;
         }
     } catch (e) {

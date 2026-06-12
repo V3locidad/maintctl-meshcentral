@@ -654,7 +654,7 @@ module.exports.maintctl = function (parent) {
                 r.time = Date.now();
                 delete pendingDispatches[did];
             }
-            if (command.pluginaction === 'examLockResult' || command.pluginaction === 'examUnlockResult' || command.pluginaction === 'examStatusResult') {
+            if (command.pluginaction === 'examLockResult' || command.pluginaction === 'examUnlockResult' || command.pluginaction === 'examStatusResult' || command.pluginaction === 'unknownAction') {
                 const did = command.dispatchId;
                 if (did) {
                     delete pendingDispatches[did];
@@ -1263,7 +1263,7 @@ module.exports.maintctl = function (parent) {
             const wsagents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
             const batchId = 'exb-' + crypto.randomBytes(6).toString('hex');
             const pa = (action === 'examLock') ? 'examLock' : (action === 'examUnlock') ? 'examUnlock' : 'examStatus';
-            const timeoutMs = (action === 'examStatus') ? 20 * 1000 : 90 * 1000;
+            const timeoutMs = (action === 'examStatus') ? 15 * 1000 : 25 * 1000;
 
             // Hôtes MC à whitelister : on prend l'host de la requête (le serveur lui-même)
             // + ce que l'utilisateur a éventuellement précisé.
