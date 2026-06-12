@@ -1325,7 +1325,7 @@ function buildExamLockScript(args) {
             + 'foreach ($d in $dns) { $allow.Add($d) }'
             : '')
         // LAN local : on calcule le subnet CIDR
-        + ($allowLan
+        + (allowLan
             ? '$nets = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne "WellKnown" -and $_.IPAddress -notlike "169.*" -and $_.IPAddress -ne "127.0.0.1" };'
             + 'foreach ($n in $nets) {'
             + '  $ipBytes = [System.Net.IPAddress]::Parse($n.IPAddress).GetAddressBytes();'
