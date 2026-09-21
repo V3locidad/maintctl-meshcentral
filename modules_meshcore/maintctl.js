@@ -12,6 +12,11 @@
 "use strict";
 
 var mesh = null;
+var duplicateWatcher = null;
+var duplicateWatcherEnabled = false;
+var duplicateWatcherRestartTimer = null;
+var duplicateWatcherBuffer = '';
+var duplicateWatcherGeneration = 0;
 
 function dbg(m) {
     // Écrit à un chemin connu et fixe (et pas via createWriteStream qui
@@ -73,6 +78,8 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'examLock':       doExamLock(args); return 'examLock started';
             case 'examUnlock':     doExamUnlock(args); return 'examUnlock started';
             case 'examStatus':     doExamStatus(args); return 'examStatus started';
+            case 'duplicateSessionWatchStart': startDuplicateSessionWatcher(args); return 'duplicateSessionWatchStart started';
+            case 'duplicateSessionWatchStop':  stopDuplicateSessionWatcher(args, true); return 'duplicateSessionWatchStop done';
             case 'duplicateSessionGuard':  doDuplicateSessionGuard(args); return 'duplicateSessionGuard started';
             case 'duplicateSessionLogoff': doDuplicateSessionLogoff(args); return 'duplicateSessionLogoff started';
             default:
@@ -429,6 +436,199 @@ function runPowerShell(script, timeoutMs, onDone) {
     }, timeoutMs);
 }
 
+// --- Détection temps réel des ouvertures/fermetures de session Windows ---
+
+function buildDuplicateWatcherScript() {
+    // EventLogWatcher pousse les nouveaux événements Security sans polling.
+    // Le filtre ne conserve que les sessions interactives ; les logons réseau,
+    // services et tâches planifiées ne doivent jamais déclencher un blocage.
+    return [
+        '$ErrorActionPreference = "Stop"',
+        '$queryText = "*[System[(EventID=4624 or EventID=4634)]]"',
+        '$query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery("Security", [System.Diagnostics.Eventing.Reader.PathType]::LogName, $queryText)',
+        '$watcher = New-Object System.Diagnostics.Eventing.Reader.EventLogWatcher($query)',
+        '$handler = {',
+        '  param($sender, $eventArgs)',
+        '  $record = $null',
+        '  try {',
+        '    if ($eventArgs.EventException) { throw $eventArgs.EventException }',
+        '    $record = $eventArgs.EventRecord',
+        '    if ($null -eq $record) { return }',
+        '    [xml]$xml = $record.ToXml()',
+        '    $fields = @{}',
+        '    foreach ($item in $xml.Event.EventData.Data) {',
+        '      $name = [string]$item.Name',
+        '      if ($name) { $fields[$name] = [string]$item."#text" }',
+        '    }',
+        '    $eventId = [int]$record.Id',
+        '    $logonType = 0',
+        '    [void][int]::TryParse([string]$fields["LogonType"], [ref]$logonType)',
+        '    if (@(2, 10, 11, 12) -notcontains $logonType) { return }',
+        '    $payload = [ordered]@{',
+        '      eventId = $eventId',
+        '      logonType = $logonType',
+        '      username = [string]$fields["TargetUserName"]',
+        '      domain = [string]$fields["TargetDomainName"]',
+        '      logonId = [string]$fields["TargetLogonId"]',
+        '      recordId = [long]$record.RecordId',
+        '      time = $record.TimeCreated.ToUniversalTime().ToString("o")',
+        '    }',
+        '    $json = $payload | ConvertTo-Json -Compress',
+        '    [Console]::Out.WriteLine("MAINTCTL_EVENT:" + $json)',
+        '    [Console]::Out.Flush()',
+        '  } catch {',
+        '    [Console]::Error.WriteLine("maintctl watcher event: " + $_.Exception.Message)',
+        '  } finally {',
+        '    if ($null -ne $record) { $record.Dispose() }',
+        '  }',
+        '}',
+        '$subscription = Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten -Action $handler',
+        '$watcher.Enabled = $true',
+        '[Console]::Out.WriteLine("MAINTCTL_READY")',
+        '[Console]::Out.Flush()',
+        'try { while ($true) { Start-Sleep -Seconds 3600 } } finally {',
+        '  $watcher.Enabled = $false',
+        '  Unregister-Event -SubscriptionId $subscription.Id -ErrorAction SilentlyContinue',
+        '  $watcher.Dispose()',
+        '}',
+    ].join('\r\n');
+}
+
+function duplicateAllLocalUsers() {
+    var out = [];
+    var seen = {};
+    try {
+        var sessions = require('kvm-helper').users();
+        for (var key in sessions) {
+            var session = sessions[key];
+            if (!session || session.SessionId == null || !session.Username) continue;
+            var account = (session.Domain ? session.Domain + '\\' : '') + session.Username;
+            var userKey = duplicateUserKey(account);
+            if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[userKey]) continue;
+            seen[userKey] = true;
+            out.push(account);
+        }
+    } catch (e) { dbg('duplicateAllLocalUsers: ' + e); }
+    return out;
+}
+
+function sendDuplicateSessionSnapshot(delay) {
+    setTimeout(function () {
+        reply({
+            pluginaction: 'duplicateSessionSnapshot',
+            users: duplicateAllLocalUsers(),
+            time: Date.now(),
+        });
+    }, Math.max(0, parseInt(delay, 10) || 0));
+}
+
+function handleDuplicateWatcherLine(line) {
+    line = String(line || '').trim();
+    if (!line) return;
+    if (line === 'MAINTCTL_READY') {
+        reply({ pluginaction: 'duplicateSessionWatchStatus', ok: true, running: true });
+        sendDuplicateSessionSnapshot(0);
+        return;
+    }
+    if (line.indexOf('MAINTCTL_EVENT:') !== 0) return;
+    try {
+        var event = JSON.parse(line.substring('MAINTCTL_EVENT:'.length));
+        reply({
+            pluginaction: 'duplicateSessionEvent',
+            eventId: parseInt(event.eventId, 10) || 0,
+            logonType: parseInt(event.logonType, 10) || 0,
+            username: String(event.username || ''),
+            domain: String(event.domain || ''),
+            logonId: String(event.logonId || ''),
+            recordId: String(event.recordId || ''),
+            eventTime: String(event.time || ''),
+        });
+        // Après un logoff, le snapshot retire rapidement la réservation.
+        // Après un logon, il confirme l'inventaire remonté immédiatement.
+        sendDuplicateSessionSnapshot((parseInt(event.eventId, 10) === 4634) ? 750 : 1500);
+    } catch (e) { dbg('duplicate watcher JSON: ' + e + ' line=' + line.slice(0, 500)); }
+}
+
+function spawnDuplicateSessionWatcher() {
+    if (!duplicateWatcherEnabled || duplicateWatcher || process.platform !== 'win32') return;
+    var fs = require('fs');
+    var cp = require('child_process');
+    var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    var ps1 = (process.env.SystemRoot || 'C:\\Windows') + '\\Temp\\maintctl-logon-watch.ps1';
+    var generation = ++duplicateWatcherGeneration;
+    duplicateWatcherBuffer = '';
+    try { fs.writeFileSync(ps1, buildDuplicateWatcherScript()); }
+    catch (e) {
+        dbg('duplicate watcher write: ' + e);
+        reply({ pluginaction: 'duplicateSessionWatchStatus', ok: false, running: false, error: 'écriture watcher: ' + String(e) });
+        return;
+    }
+    try {
+        duplicateWatcher = cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-File', ps1]);
+    } catch (e2) {
+        duplicateWatcher = null;
+        dbg('duplicate watcher spawn: ' + e2);
+        reply({ pluginaction: 'duplicateSessionWatchStatus', ok: false, running: false, error: 'démarrage watcher: ' + String(e2) });
+        return;
+    }
+    if (duplicateWatcher.stdout) {
+        duplicateWatcher.stdout.on('data', function (data) {
+            duplicateWatcherBuffer += data.toString();
+            if (duplicateWatcherBuffer.length > 65536) duplicateWatcherBuffer = duplicateWatcherBuffer.slice(-32768);
+            var parts = duplicateWatcherBuffer.split(/\r?\n/);
+            duplicateWatcherBuffer = parts.pop();
+            for (var i = 0; i < parts.length; i++) handleDuplicateWatcherLine(parts[i]);
+        });
+    }
+    if (duplicateWatcher.stderr) {
+        duplicateWatcher.stderr.on('data', function (data) { dbg('duplicate watcher stderr: ' + data.toString().slice(-2000)); });
+    }
+    duplicateWatcher.on('exit', function () {
+        if (generation !== duplicateWatcherGeneration) return;
+        duplicateWatcher = null;
+        reply({ pluginaction: 'duplicateSessionWatchStatus', ok: false, running: false, error: 'surveillance du journal arrêtée' });
+        if (duplicateWatcherEnabled) {
+            duplicateWatcherRestartTimer = setTimeout(function () {
+                duplicateWatcherRestartTimer = null;
+                spawnDuplicateSessionWatcher();
+            }, 10000);
+        }
+    });
+}
+
+function startDuplicateSessionWatcher(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'duplicateSessionWatchStatus', dispatchId: args && args.dispatchId, ok: false, running: false, error: 'Windows only' });
+        return;
+    }
+    duplicateWatcherEnabled = true;
+    if (duplicateWatcherRestartTimer) {
+        try { clearTimeout(duplicateWatcherRestartTimer); } catch (_) {}
+        duplicateWatcherRestartTimer = null;
+    }
+    if (duplicateWatcher) {
+        reply({ pluginaction: 'duplicateSessionWatchStatus', dispatchId: args && args.dispatchId, ok: true, running: true });
+        sendDuplicateSessionSnapshot(0);
+        return;
+    }
+    spawnDuplicateSessionWatcher();
+}
+
+function stopDuplicateSessionWatcher(args, notify) {
+    duplicateWatcherEnabled = false;
+    duplicateWatcherGeneration++;
+    if (duplicateWatcherRestartTimer) {
+        try { clearTimeout(duplicateWatcherRestartTimer); } catch (_) {}
+        duplicateWatcherRestartTimer = null;
+    }
+    var child = duplicateWatcher;
+    duplicateWatcher = null;
+    if (child) { try { child.kill(); } catch (_) {} }
+    if (notify) {
+        reply({ pluginaction: 'duplicateSessionWatchStatus', dispatchId: args && args.dispatchId, ok: true, running: false });
+    }
+}
+
 // --- Protection contre les connexions simultanées sur plusieurs postes ---
 
 function duplicateUserKey(value) {
@@ -465,10 +665,10 @@ function duplicateLocalSessions(username) {
     return out;
 }
 
-function waitDuplicateSessions(username, attempts, callback) {
+function waitDuplicateSessions(username, attempts, callback, intervalMs) {
     var sessions = duplicateLocalSessions(username);
     if (sessions.length || attempts <= 0) return callback(sessions);
-    setTimeout(function () { waitDuplicateSessions(username, attempts - 1, callback); }, 500);
+    setTimeout(function () { waitDuplicateSessions(username, attempts - 1, callback, intervalMs); }, intervalMs || 500);
 }
 
 function duplicatePsLiteral(value) {
@@ -617,7 +817,7 @@ function doDuplicateSessionLogoff(args) {
         reply({ pluginaction: 'duplicateSessionLogoffResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', closed: 0 });
         return;
     }
-    waitDuplicateSessions(args.username, 6, function (sessions) {
+    waitDuplicateSessions(args.username, args.immediate ? 50 : 6, function (sessions) {
         if (!sessions.length) {
             reply({ pluginaction: 'duplicateSessionLogoffResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', closed: 0 });
             return;
@@ -633,7 +833,7 @@ function doDuplicateSessionLogoff(args) {
                 logTail: (log || '').slice(-1000),
             });
         });
-    });
+    }, args.immediate ? 100 : 500);
 }
 
 // Nettoyage natif PowerShell via Win32_UserProfile (LastUseTime fiable),

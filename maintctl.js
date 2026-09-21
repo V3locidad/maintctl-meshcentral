@@ -17,6 +17,7 @@ const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
 const MULTI_LOGIN_EVENT_MAX = 100;
+const MULTI_LOGIN_SEEN_TTL_MS = 10 * 60 * 1000;
 const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
@@ -436,6 +437,8 @@ module.exports.maintctl = function (parent) {
     const multiLoginRequests = {};    // dispatchId -> proposition en cours
     const multiLoginLogoffs = {};     // dispatchId -> fermeture demandée
     const multiLoginEvents = [];
+    const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
+    const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
 
     function multiLoginDisplay(value) {
         let raw = value;
@@ -503,6 +506,90 @@ module.exports.maintctl = function (parent) {
         } catch (_) { return false; }
     }
 
+    function setMultiLoginWatcher(nodeId, enabled) {
+        if (!nodeId) return false;
+        const sent = sendMultiLoginAgent(nodeId, {
+            pluginaction: enabled ? 'duplicateSessionWatchStart' : 'duplicateSessionWatchStop',
+            dispatchId: 'ml-watch-' + crypto.randomBytes(8).toString('hex'),
+        });
+        if (sent) {
+            multiLoginWatchers[nodeId] = {
+                running: false,
+                ok: true,
+                starting: !!enabled,
+                error: '',
+                updatedAt: Date.now(),
+            };
+        }
+        return sent;
+    }
+
+    function broadcastMultiLoginWatcher(enabled) {
+        const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        Object.keys(agents).forEach((nodeId) => setMultiLoginWatcher(nodeId, enabled));
+    }
+
+    function updateMultiLoginSnapshot(nodeId, values, agent) {
+        if (!nodeId) return;
+        const previous = multiLoginNodes[nodeId];
+        multiLoginNodes[nodeId] = {
+            meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
+            users: multiLoginUsers(values),
+            updatedAt: Date.now(),
+            primed: true,
+        };
+    }
+
+    function handleMultiLoginSecurityEvent(nodeId, command, agent) {
+        if (!nodeId || !command) return;
+        const eventId = parseInt(command.eventId, 10) || 0;
+        const logonType = parseInt(command.logonType, 10) || 0;
+        if ((eventId !== 4624 && eventId !== 4634) || [2, 10, 11, 12].indexOf(logonType) < 0) return;
+
+        const recordId = String(command.recordId || '');
+        const seenKey = nodeId + '/' + (recordId || (eventId + '/' + String(command.logonId || '') + '/' + String(command.eventTime || '')));
+        if (multiLoginSeenEvents[seenKey]) return;
+        multiLoginSeenEvents[seenKey] = Date.now();
+
+        const username = String(command.username || '').trim();
+        const domain = String(command.domain || '').trim();
+        const display = username && domain && username.indexOf('\\') < 0 ? domain + '\\' + username : username;
+        const user = multiLoginUsers([display])[0];
+        if (!user) return;
+
+        const previous = multiLoginNodes[nodeId];
+        const state = previous || {
+            meshid: (agent && agent.dbMeshKey) || '',
+            users: [],
+            updatedAt: Date.now(),
+            primed: true,
+        };
+        if (!previous) multiLoginNodes[nodeId] = state;
+
+        if (eventId === 4624) {
+            const alreadyKnown = state.users.some((entry) => entry.key === user.key);
+            if (!alreadyKnown) state.users.push(user);
+            state.updatedAt = Date.now();
+            state.primed = true;
+            // L'événement Security est reçu juste après l'authentification et
+            // devient la réservation atomique. Le premier poste gagne ; le
+            // second est fermé sans attendre la prochaine remontée coreinfo.
+            if (!alreadyKnown) enforceMultiLogin(nodeId, user, {
+                immediate: true,
+                source: 'eventlog',
+                logonId: String(command.logonId || ''),
+            });
+        }
+        // Pour 4634, le snapshot envoyé 750 ms plus tard par l'agent est la
+        // source de vérité. Cela évite de retirer le compte s'il reste une
+        // autre session locale ouverte pour le même utilisateur.
+
+        const now = Date.now();
+        Object.keys(multiLoginSeenEvents).forEach((key) => {
+            if (now - multiLoginSeenEvents[key] > MULTI_LOGIN_SEEN_TTL_MS) delete multiLoginSeenEvents[key];
+        });
+    }
+
     function multiLoginRemoteSessions(nodeId, userKey) {
         const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
         return Object.keys(multiLoginNodes).filter((otherId) => {
@@ -512,7 +599,8 @@ module.exports.maintctl = function (parent) {
         });
     }
 
-    function requestMultiLoginLogoff(nodeId, username, message, requestId, targetKind) {
+    function requestMultiLoginLogoff(nodeId, username, message, requestId, targetKind, options) {
+        options = options || {};
         const dispatchId = 'ml-logoff-' + crypto.randomBytes(10).toString('hex');
         multiLoginLogoffs[dispatchId] = {
             nodeId: nodeId, username: username, requestId: requestId,
@@ -523,7 +611,11 @@ module.exports.maintctl = function (parent) {
             dispatchId: dispatchId,
             username: username,
             message: message,
-            warningSeconds: targetKind === 'remote' ? 10 : 3,
+            warningSeconds: options.warningSeconds != null
+                ? Math.max(0, Math.min(30, parseInt(options.warningSeconds, 10) || 0))
+                : (targetKind === 'remote' ? 10 : 3),
+            immediate: options.immediate === true,
+            logonId: options.logonId || '',
         });
         if (!sent) {
             delete multiLoginLogoffs[dispatchId];
@@ -535,12 +627,40 @@ module.exports.maintctl = function (parent) {
         return sent;
     }
 
-    function enforceMultiLogin(nodeId, user) {
+    function enforceMultiLogin(nodeId, user, options) {
+        options = options || {};
         if (!multiLoginConfig.enabled || !user || multiLoginExcluded(user.key)) return;
         const remoteNodeIds = multiLoginRemoteSessions(nodeId, user.key);
         if (!remoteNodeIds.length) return;
         const locations = remoteNodeIds.map(multiLoginNodeInfo);
         const here = multiLoginNodeInfo(nodeId);
+
+        // Avec le journal Security, le serveur apprend le nouveau logon dès
+        // l'événement 4624. En mode blocage, on ferme directement cette
+        // nouvelle session : aucun dialogue n'attend l'arrivée d'explorer.exe.
+        if (options.immediate && multiLoginConfig.mode === 'block') {
+            const sentImmediate = requestMultiLoginLogoff(
+                nodeId,
+                user.display,
+                'Connexion multiple interdite. Le compte est déjà ouvert sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ') + '.',
+                'eventlog-' + String(options.logonId || Date.now()),
+                'new',
+                { immediate: true, warningSeconds: 0, logonId: options.logonId || '' }
+            );
+            addMultiLoginEvent({
+                kind: sentImmediate ? 'blocked' : 'error',
+                username: user.display,
+                nodeId: nodeId,
+                nodeName: here.name,
+                mesh: here.mesh,
+                remoteNodeIds: remoteNodeIds,
+                detail: sentImmediate
+                    ? 'Événement Windows 4624 détecté ; compte déjà ouvert sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ') + ' ; fermeture immédiate de la nouvelle session demandée'
+                    : 'Événement Windows 4624 détecté mais agent injoignable',
+            });
+            return;
+        }
+
         const dispatchId = 'ml-guard-' + crypto.randomBytes(10).toString('hex');
         multiLoginRequests[dispatchId] = {
             nodeId: nodeId,
@@ -653,12 +773,24 @@ module.exports.maintctl = function (parent) {
             username: byUser[key][0].username,
             sessions: byUser[key],
         }));
+        const onlineNodeIds = Object.keys(online);
+        const runningWatchers = onlineNodeIds.filter((nodeId) => multiLoginWatchers[nodeId] && multiLoginWatchers[nodeId].running).length;
+        const watcherErrors = onlineNodeIds.filter((nodeId) => multiLoginWatchers[nodeId] && multiLoginWatchers[nodeId].ok === false).map((nodeId) => ({
+            nodeId: nodeId,
+            name: multiLoginNodeInfo(nodeId).name,
+            error: multiLoginWatchers[nodeId].error || 'surveillance arrêtée',
+        }));
         return {
             settings: multiLoginConfig,
             sessions: sessions,
             conflicts: conflicts,
             events: multiLoginEvents.slice(0, 50),
             pending: Object.keys(multiLoginRequests).length,
+            watcher: {
+                running: runningWatchers,
+                online: onlineNodeIds.length,
+                errors: watcherErrors.slice(0, 20),
+            },
         };
     }
 
@@ -712,9 +844,36 @@ module.exports.maintctl = function (parent) {
         });
     }
 
-    obj.serveraction = function (command) {
+    obj.serveraction = function (command, agent) {
         try {
             if (!command) return;
+            const sourceNodeId = agent && agent.dbNodeKey;
+
+            if (command.pluginaction === 'duplicateSessionWatchStatus') {
+                if (sourceNodeId) {
+                    multiLoginWatchers[sourceNodeId] = {
+                        running: command.running === true,
+                        ok: command.ok === true,
+                        starting: false,
+                        error: command.error || '',
+                        updatedAt: Date.now(),
+                    };
+                }
+                return;
+            }
+
+            if (command.pluginaction === 'duplicateSessionSnapshot') {
+                if (sourceNodeId && Array.isArray(command.users)) {
+                    updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
+                }
+                return;
+            }
+
+            if (command.pluginaction === 'duplicateSessionEvent') {
+                handleMultiLoginSecurityEvent(sourceNodeId, command, agent);
+                return;
+            }
+
             if (command.pluginaction === 'pong') return;
 
             if (command.pluginaction === 'regResult') {
@@ -1068,12 +1227,21 @@ module.exports.maintctl = function (parent) {
             if (event.action === 'nodeconnect' && event.nodeid) {
                 const offline = ((event.conn != null) && ((Number(event.conn) & 1) === 0)) ||
                     ((event.pwr != null) && Number(event.pwr) === 0);
-                if (offline) delete multiLoginNodes[event.nodeid];
+                if (offline) {
+                    delete multiLoginNodes[event.nodeid];
+                    delete multiLoginWatchers[event.nodeid];
+                }
                 else if (!multiLoginNodes[event.nodeid]) {
                     multiLoginNodes[event.nodeid] = { meshid: event.meshid || '', users: [], updatedAt: Date.now(), primed: false };
                 }
+                if (!offline && multiLoginConfig.enabled) {
+                    const connectedNodeId = event.nodeid;
+                    const startTimer = setTimeout(() => setMultiLoginWatcher(connectedNodeId, true), 1500);
+                    if (startTimer && typeof startTimer.unref === 'function') startTimer.unref();
+                }
             } else if (event.action === 'stopped') {
                 Object.keys(multiLoginNodes).forEach((nodeId) => delete multiLoginNodes[nodeId]);
+                Object.keys(multiLoginWatchers).forEach((nodeId) => delete multiLoginWatchers[nodeId]);
             }
         } catch (_) {}
     };
@@ -1088,7 +1256,9 @@ module.exports.maintctl = function (parent) {
                 obj.meshServer.AddEventDispatch(['*'], obj);
             }
             if (obj.meshServer) obj.meshServer.__maintctlMultiLoginListener = obj;
-            refreshMultiLoginInventory();
+            refreshMultiLoginInventory(function () {
+                if (multiLoginConfig.enabled) broadcastMultiLoginWatcher(true);
+            });
         } catch (e) {
             console.log('maintctl: initialisation connexions multiples: ' + e.message);
         }
@@ -1236,6 +1406,7 @@ module.exports.maintctl = function (parent) {
                 if (!next.enabled) {
                     Object.keys(multiLoginRequests).forEach((id) => delete multiLoginRequests[id]);
                 }
+                broadcastMultiLoginWatcher(next.enabled);
                 addMultiLoginEvent({
                     kind: 'settings',
                     username: (user && (user.name || user._id)) || 'administrateur',

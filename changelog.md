@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0
+
+- Ajout d’une surveillance temps réel du journal de sécurité Windows sur chaque MeshAgent.
+- Les événements `4624` des connexions interactives locales, mises en cache et RDP sont transmis immédiatement au serveur, sans attendre la prochaine remontée `coreinfo`.
+- En mode « Refuser », le deuxième logon est fermé dès sa détection, normalement pendant l’écran « Bienvenue », sans attendre `explorer.exe` ni afficher un dialogue bloquant.
+- Le premier poste réserve immédiatement le compte côté serveur ; une connexion presque simultanée sur un autre poste est donc identifiée comme la nouvelle session.
+- Les événements `4634` et un inventaire WTS local libèrent rapidement la réservation à la fermeture de session.
+- L’onglet Connexions indique combien d’agents surveillent effectivement le journal Windows.
+
 ## 0.13.2
 
 - Le message et la fermeture de la nouvelle session sont maintenant exécutés dans une seule commande Windows.

@@ -558,6 +558,7 @@
   <div class="bar">
     <button id="multiLoginRefreshBtn">Rafraîchir</button>
     <span id="multiLoginState" class="pill">Chargement…</span>
+    <span id="multiLoginWatcherState" class="pill" style="display:none"></span>
     <span id="multiLoginConflictCount" class="pill" style="display:none;background:#f8d7da;color:#721c24"></span>
     <span style="flex:1"></span>
     <button id="multiLoginSaveBtn" class="primary">Enregistrer la règle</button>
@@ -572,7 +573,7 @@
       </div>
     </label>
     <div style="margin:10px 0 6px 24px">
-      <label><input type="radio" name="multiLoginMode" value="block" checked> Refuser la nouvelle session et afficher la salle ainsi que le poste déjà utilisé</label><br>
+      <label><input type="radio" name="multiLoginMode" value="block" checked> Fermer immédiatement la nouvelle session (la salle et le poste déjà utilisés sont journalisés ci-dessous)</label><br>
       <label><input type="radio" name="multiLoginMode" value="prompt"> Proposer de fermer la session distante pour continuer sur le nouveau poste</label>
     </div>
     <div style="margin:8px 0 0 24px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
@@ -580,7 +581,7 @@
       <label style="flex:1;min-width:320px">Comptes exclus : <input id="multiLoginExcluded" type="text" style="width:70%" placeholder="administrator, administrateur, admin, maintenance"></label>
     </div>
     <div style="margin-top:10px;padding:8px;background:#fff3cd;color:#6b5200;font-size:11px;border-radius:3px">
-      MeshCentral intervient après la création de la session Windows : le bureau peut donc apparaître brièvement avant le message et la fermeture. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
+      Le journal de sécurité Windows est surveillé en temps réel. En mode refus, la nouvelle session est fermée dès l’événement 4624, normalement pendant l’écran « Bienvenue ». L’authentification a toutefois déjà réussi : ce mécanisme ferme immédiatement la session, il ne remplace pas un Credential Provider Windows. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
     </div>
   </div>
 
@@ -3101,6 +3102,18 @@ refreshAgents().then(function () {
     document.getElementById('multiLoginState').textContent = settings.enabled
       ? 'Connexions multiples bloquées'
       : 'Connexions multiples autorisées';
+    var watcher = data.watcher || {};
+    var watcherState = document.getElementById('multiLoginWatcherState');
+    if (settings.enabled) {
+      watcherState.style.display = 'inline-block';
+      watcherState.textContent = 'Journal Windows : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0) + ' agent(s)';
+      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0) ? '#d4edda' : '#fff3cd';
+      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
+      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
+    } else {
+      watcherState.style.display = 'none';
+      watcherState.title = '';
+    }
 
     var conflicts = data.conflicts || [];
     var conflictCount = document.getElementById('multiLoginConflictCount');
