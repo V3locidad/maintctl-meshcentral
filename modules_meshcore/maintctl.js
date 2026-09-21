@@ -73,6 +73,8 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'examLock':       doExamLock(args); return 'examLock started';
             case 'examUnlock':     doExamUnlock(args); return 'examUnlock started';
             case 'examStatus':     doExamStatus(args); return 'examStatus started';
+            case 'duplicateSessionGuard':  doDuplicateSessionGuard(args); return 'duplicateSessionGuard started';
+            case 'duplicateSessionLogoff': doDuplicateSessionLogoff(args); return 'duplicateSessionLogoff started';
             default:
                 // Répond toujours pour que le serveur ne reste pas en attente.
                 try { reply({ pluginaction: 'unknownAction', dispatchId: args && args.dispatchId, ok: false, error: 'action inconnue côté agent: ' + fnname + ' (module peut-être obsolète, redémarre l\'agent)' }); } catch (e) {}
@@ -425,6 +427,163 @@ function runPowerShell(script, timeoutMs, onDone) {
         try { child.kill(); } catch (_) {}
         finish(false, 'timeout');
     }, timeoutMs);
+}
+
+// --- Protection contre les connexions simultanées sur plusieurs postes ---
+
+function duplicateUserKey(value) {
+    var text = String(value || '').trim().toLowerCase();
+    var slash = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+    if (slash >= 0) text = text.substring(slash + 1);
+    var at = text.indexOf('@');
+    if (at > 0) text = text.substring(0, at);
+    return text;
+}
+
+function duplicateLocalSessions(username) {
+    var wanted = duplicateUserKey(username);
+    var out = [];
+    try {
+        var sessions = require('kvm-helper').users();
+        for (var key in sessions) {
+            var session = sessions[key];
+            if (!session || session.SessionId == null || !session.Username) continue;
+            var account = (session.Domain ? session.Domain + '\\' : '') + session.Username;
+            if (duplicateUserKey(account) !== wanted) continue;
+            out.push({
+                id: parseInt(session.SessionId, 10),
+                state: String(session.State || '').toLowerCase(),
+            });
+        }
+    } catch (e) { dbg('duplicateLocalSessions: ' + e); }
+    out = out.filter(function (session) { return !isNaN(session.id); });
+    out.sort(function (a, b) {
+        var aa = (a.state === 'active' || a.state === 'connected') ? 0 : 1;
+        var bb = (b.state === 'active' || b.state === 'connected') ? 0 : 1;
+        return aa - bb;
+    });
+    return out;
+}
+
+function waitDuplicateSessions(username, attempts, callback) {
+    var sessions = duplicateLocalSessions(username);
+    if (sessions.length || attempts <= 0) return callback(sessions);
+    setTimeout(function () { waitDuplicateSessions(username, attempts - 1, callback); }, 500);
+}
+
+function duplicatePsLiteral(value) {
+    return "'" + String(value || '').replace(/[\r\n\u0000-\u001f]/g, ' ').replace(/'/g, "''") + "'";
+}
+
+function duplicateWtsType(includeLogoff) {
+    return ''
+        + '$source = @"\r\n'
+        + 'using System;\r\n'
+        + 'using System.Runtime.InteropServices;\r\n'
+        + 'public static class MaintctlWts {\r\n'
+        + '  [DllImport("wtsapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]\r\n'
+        + '  public static extern bool WTSSendMessageW(IntPtr server, int sessionId, string title, int titleBytes, string message, int messageBytes, int style, int timeout, out int response, bool wait);\r\n'
+        + (includeLogoff
+            ? '  [DllImport("wtsapi32.dll", SetLastError=true)] public static extern bool WTSLogoffSession(IntPtr server, int sessionId, bool wait);\r\n'
+            : '')
+        + '}\r\n'
+        + '"@\r\n'
+        + 'Add-Type -TypeDefinition $source -ErrorAction Stop;';
+}
+
+function buildDuplicatePromptScript(sessionId, title, message, yesNo, timeoutSeconds) {
+    var style = (yesNo ? 4 : 0) + 48 + 65536 + 262144; // Yes/No ou OK, warning, foreground, topmost
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + duplicateWtsType(false)
+        + '$title = ' + duplicatePsLiteral(title) + ';'
+        + '$message = ' + duplicatePsLiteral(message) + ';'
+        + '$response = 0;'
+        + '$ok = [MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),' + style + ',' + parseInt(timeoutSeconds, 10) + ',[ref]$response,$true);'
+        + 'Write-Host ("RESULT:" + $response + ":" + $(if ($ok) { "prompt-ok" } else { "prompt-failed" }));';
+}
+
+function doDuplicateSessionGuard(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', decision: 'deny' });
+        return;
+    }
+    waitDuplicateSessions(args.username, 10, function (sessions) {
+        if (!sessions.length) {
+            reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', decision: 'deny' });
+            return;
+        }
+        var locations = Array.isArray(args.locations) ? args.locations : [];
+        var where = locations.length ? locations.join(' ; ') : 'un autre poste';
+        var promptMode = args.mode === 'prompt';
+        var message = promptMode
+            ? 'Le compte ' + args.username + ' est déjà ouvert sur : ' + where + '. Voulez-vous fermer la ou les sessions distantes et continuer sur ce poste ? Oui = fermer à distance. Non = fermer cette nouvelle session.'
+            : 'Connexion multiple interdite. Le compte ' + args.username + ' est déjà ouvert sur : ' + where + '. Cette nouvelle session va être fermée.';
+        var timeout = promptMode
+            ? Math.max(15, Math.min(120, parseInt(args.promptTimeoutSeconds, 10) || 45))
+            : 15;
+        var script = buildDuplicatePromptScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
+        runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
+            var accepted = promptMode && response === 6; // IDYES
+            reply({
+                pluginaction: 'duplicateSessionGuardResult',
+                dispatchId: args.dispatchId,
+                ok: !!(ok && response),
+                decision: accepted ? 'replace' : 'deny',
+                response: response || 0,
+                error: response ? null : (note || 'dialogue Windows indisponible'),
+                logTail: (log || '').slice(-1000),
+            });
+        });
+    });
+}
+
+function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) {
+    var ids = sessionIds.map(function (id) { return parseInt(id, 10); }).filter(function (id) { return !isNaN(id); });
+    return ''
+        + '$ErrorActionPreference = "Stop";'
+        + duplicateWtsType(true)
+        + '$title = ' + duplicatePsLiteral(title) + ';'
+        + '$message = ' + duplicatePsLiteral(message) + ';'
+        + '$closed = 0;'
+        + '$ids = @(' + ids.join(',') + ');'
+        + 'foreach ($id in $ids) {'
+        + (warningSeconds > 0
+            ? '  $response = 0; [void][MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,$id,$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),327728,' + parseInt(warningSeconds, 10) + ',[ref]$response,$true);'
+            : '')
+        + '  if ([MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,$id,$true)) { $closed++ }'
+        + '}'
+        + 'Write-Host ("RESULT:" + $closed + ":logoff");';
+}
+
+function doDuplicateSessionLogoff(args) {
+    if (process.platform !== 'win32') {
+        reply({ pluginaction: 'duplicateSessionLogoffResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', closed: 0 });
+        return;
+    }
+    waitDuplicateSessions(args.username, 6, function (sessions) {
+        if (!sessions.length) {
+            reply({ pluginaction: 'duplicateSessionLogoffResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', closed: 0 });
+            return;
+        }
+        var warning = Math.max(0, Math.min(30, parseInt(args.warningSeconds, 10) || 0));
+        var script = buildDuplicateLogoffScript(
+            sessions.map(function (session) { return session.id; }),
+            'Fermeture de session',
+            args.message || 'Cette session Windows va être fermée.',
+            warning
+        );
+        runPowerShell(script, (30 + warning * sessions.length) * 1000, function (ok, closed, log, note) {
+            reply({
+                pluginaction: 'duplicateSessionLogoffResult',
+                dispatchId: args.dispatchId,
+                ok: !!(ok && closed > 0),
+                closed: closed || 0,
+                error: closed > 0 ? null : (note || 'WTSLogoffSession a échoué'),
+                logTail: (log || '').slice(-1000),
+            });
+        });
+    });
 }
 
 // Nettoyage natif PowerShell via Win32_UserProfile (LastUseTime fiable),

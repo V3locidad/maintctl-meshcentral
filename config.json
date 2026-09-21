@@ -1,9 +1,9 @@
 {
   "name": "maintctl",
   "shortName": "maintctl",
-  "version": "0.12.5",
+  "version": "0.13.0",
   "author": "V3locidad",
-  "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage (%TEMP%, caches navigateurs, DISM, profils), gestionnaire de périphériques + bibliothèque de drivers (pnputil), Santé (alertes disque/uptime), Événements (BSOD/disque/driver) et éditeur de Registre (clés/valeurs, action rapide, modèles), mode Examen (coupure internet par règles Windows Firewall avec whitelist MC/DNS/LAN/custom et auto-unlock).",
+  "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage, périphériques, drivers, santé, événements, registre, mode Examen et contrôle des connexions Windows simultanées sur plusieurs postes.",
   "hasAdminPanel": true,
   "homepage": "https://github.com/V3locidad/maintctl-meshcentral",
   "changelogUrl": "https://raw.githubusercontent.com/V3locidad/maintctl-meshcentral/main/changelog.md",

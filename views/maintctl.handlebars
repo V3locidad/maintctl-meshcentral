@@ -227,6 +227,15 @@
   .regTone-blue   { background: #e7f0fb; border-color: #b6cfe9; color: #1a4a87; }
   .regTone-orange { background: #fff4e3; border-color: #f5cfa1; color: #8a5217; }
   .regTone-red    { background: #fbe9e7; border-color: #f5b6ad; color: #8a2a17; }
+  .multiLoginCard { border:1px solid #ddd; border-radius:5px; background:#fff; padding:12px; margin-bottom:10px; }
+  .multiLoginCard h3 { margin:0 0 8px; font-size:14px; }
+  .multiLoginOption { display:flex; gap:8px; align-items:flex-start; margin:7px 0; }
+  .multiLoginOption .desc { color:#777; font-size:11px; margin-top:2px; }
+  .multiLoginTable { width:100%; border-collapse:collapse; font-size:12px; }
+  .multiLoginTable th, .multiLoginTable td { text-align:left; padding:5px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  .multiLoginTable th { background:#f4f4f4; position:sticky; top:0; }
+  .multiLoginConflict { border-left:4px solid #d9534f; background:#fff8f8; padding:8px 10px; margin-bottom:6px; }
+  .multiLoginEvent { padding:4px 6px; border-bottom:1px solid #eee; font-size:11px; }
 </style>
 </head>
 <body>
@@ -241,6 +250,7 @@
   <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
   <div class="tab" data-tab="registry">Registre</div>
   <div class="tab" data-tab="exam">Examen <span id="examLockedBadge" class="alertBadge" style="display:none">0</span></div>
+  <div class="tab" data-tab="sessions">Connexions</div>
 </div>
 
 <!-- ============ TAB NETTOYAGE ============ -->
@@ -537,6 +547,58 @@
       <thead><tr><th>Poste</th><th>Salle</th><th>Action</th><th>Statut</th><th>Whitelist</th><th>Détail</th></tr></thead>
       <tbody id="examResultsBody"></tbody>
     </table>
+  </div>
+</div>
+
+<!-- ============ TAB CONNEXIONS MULTIPLES ============ -->
+<div id="panel-sessions" class="panel">
+  <div class="bar">
+    <button id="multiLoginRefreshBtn">Rafraîchir</button>
+    <span id="multiLoginState" class="pill">Chargement…</span>
+    <span id="multiLoginConflictCount" class="pill" style="display:none;background:#f8d7da;color:#721c24"></span>
+    <span style="flex:1"></span>
+    <button id="multiLoginSaveBtn" class="primary">Enregistrer la règle</button>
+  </div>
+
+  <div class="multiLoginCard">
+    <h3>Règle de connexion Windows</h3>
+    <label class="multiLoginOption">
+      <input type="checkbox" id="multiLoginEnabled">
+      <div><b>Bloquer les connexions multiples</b>
+        <div class="desc">Si cette case est décochée, un même compte peut rester ouvert sur plusieurs postes.</div>
+      </div>
+    </label>
+    <div style="margin:10px 0 6px 24px">
+      <label><input type="radio" name="multiLoginMode" value="block" checked> Refuser la nouvelle session et afficher la salle ainsi que le poste déjà utilisé</label><br>
+      <label><input type="radio" name="multiLoginMode" value="prompt"> Proposer de fermer la session distante pour continuer sur le nouveau poste</label>
+    </div>
+    <div style="margin:8px 0 0 24px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <label>Délai de réponse : <input id="multiLoginTimeout" type="number" min="15" max="120" value="45" style="width:58px"> s</label>
+      <label style="flex:1;min-width:320px">Comptes exclus : <input id="multiLoginExcluded" type="text" style="width:70%" placeholder="administrator, administrateur, admin, maintenance"></label>
+    </div>
+    <div style="margin-top:10px;padding:8px;background:#fff3cd;color:#6b5200;font-size:11px;border-radius:3px">
+      MeshCentral intervient après la création de la session Windows : le bureau peut donc apparaître brièvement avant le message et la fermeture. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
+    </div>
+  </div>
+
+  <div class="multiLoginCard">
+    <h3>Conflits actuellement détectés</h3>
+    <div id="multiLoginConflicts"><div class="empty">Aucun conflit.</div></div>
+  </div>
+
+  <div class="multiLoginCard" style="min-height:180px">
+    <h3>Sessions actuellement connues</h3>
+    <div style="max-height:300px;overflow:auto">
+      <table class="multiLoginTable">
+        <thead><tr><th>Utilisateur</th><th>Salle</th><th>Poste</th><th>Dernière information</th></tr></thead>
+        <tbody id="multiLoginSessions"><tr><td colspan="4" class="empty">Chargement…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="multiLoginCard">
+    <h3>Dernières décisions</h3>
+    <div id="multiLoginEvents"><div class="empty">Aucun événement.</div></div>
   </div>
 </div>
 
@@ -2998,6 +3060,117 @@ refreshAgents().then(function () {
   $$('examUnlockAllBtn').addEventListener('click', doUnlockAll);
   setInterval(function () { if (examLoaded) loadExamLocks(); }, 30000);
   loadExamLocks();
+})();
+
+// ---- CONNEXIONS MULTIPLES ----
+(function () {
+  var loaded = false;
+  var editing = false;
+
+  function multiLoginDate(ms) {
+    if (!ms) return '—';
+    try { return new Date(ms).toLocaleString('fr-FR'); } catch (_) { return '—'; }
+  }
+
+  function selectedMultiLoginMode() {
+    var item = document.querySelector('input[name="multiLoginMode"]:checked');
+    return item ? item.value : 'block';
+  }
+
+  function updateMultiLoginInputs() {
+    var enabled = document.getElementById('multiLoginEnabled').checked;
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="multiLoginMode"]'), function (input) {
+      input.disabled = !enabled;
+    });
+    document.getElementById('multiLoginTimeout').disabled = !enabled || selectedMultiLoginMode() !== 'prompt';
+  }
+
+  function renderMultiLogin(data) {
+    var settings = data.settings || {};
+    if (!editing) {
+      document.getElementById('multiLoginEnabled').checked = !!settings.enabled;
+      var mode = document.querySelector('input[name="multiLoginMode"][value="' + (settings.mode === 'prompt' ? 'prompt' : 'block') + '"]');
+      if (mode) mode.checked = true;
+      document.getElementById('multiLoginTimeout').value = settings.promptTimeoutSeconds || 45;
+      document.getElementById('multiLoginExcluded').value = (settings.excludedUsers || []).join(', ');
+    }
+    updateMultiLoginInputs();
+    document.getElementById('multiLoginState').textContent = settings.enabled
+      ? 'Connexions multiples bloquées'
+      : 'Connexions multiples autorisées';
+
+    var conflicts = data.conflicts || [];
+    var conflictCount = document.getElementById('multiLoginConflictCount');
+    conflictCount.style.display = conflicts.length ? 'inline-block' : 'none';
+    conflictCount.textContent = conflicts.length + ' conflit(s)';
+    document.getElementById('multiLoginConflicts').innerHTML = conflicts.length
+      ? conflicts.map(function (conflict) {
+          return '<div class="multiLoginConflict"><b>' + escapeHtml(conflict.username) + '</b><br>'
+            + conflict.sessions.map(function (session) {
+                return escapeHtml(session.mesh + ' — ' + session.name);
+              }).join('<br>') + '</div>';
+        }).join('')
+      : '<div class="empty">Aucun conflit actuellement détecté.</div>';
+
+    var sessions = data.sessions || [];
+    document.getElementById('multiLoginSessions').innerHTML = sessions.length
+      ? sessions.map(function (session) {
+          return '<tr><td><b>' + escapeHtml(session.username) + '</b></td><td>' + escapeHtml(session.mesh)
+            + '</td><td>' + escapeHtml(session.name) + '</td><td>' + multiLoginDate(session.updatedAt) + '</td></tr>';
+        }).join('')
+      : '<tr><td colspan="4" class="empty">Aucune session utilisateur connue sur les agents en ligne.</td></tr>';
+
+    var events = data.events || [];
+    document.getElementById('multiLoginEvents').innerHTML = events.length
+      ? events.map(function (event) {
+          return '<div class="multiLoginEvent"><b>' + multiLoginDate(event.time) + '</b> — '
+            + escapeHtml(event.username || '') + ' — ' + escapeHtml(event.detail || event.kind || '') + '</div>';
+        }).join('')
+      : '<div class="empty">Aucun événement depuis le dernier chargement du plugin.</div>';
+  }
+
+  function loadMultiLogin() {
+    return getJson(BASE + '&action=multiLoginStatus').then(function (data) {
+      renderMultiLogin(data);
+      loaded = true;
+    }).catch(function (error) {
+      document.getElementById('multiLoginState').textContent = 'Erreur : ' + error.message;
+    });
+  }
+
+  function saveMultiLogin() {
+    var payload = {
+      enabled: document.getElementById('multiLoginEnabled').checked,
+      mode: selectedMultiLoginMode(),
+      promptTimeoutSeconds: parseInt(document.getElementById('multiLoginTimeout').value, 10) || 45,
+      excludedUsers: (document.getElementById('multiLoginExcluded').value || '').split(/[,;\n]+/).map(function (value) {
+        return value.trim();
+      }).filter(Boolean),
+    };
+    var button = document.getElementById('multiLoginSaveBtn');
+    button.disabled = true;
+    getJson(BASE + '&action=multiLoginSave&payload=' + encodeURIComponent(JSON.stringify(payload))).then(function (result) {
+      if (!result.ok) throw new Error(result.error || 'enregistrement impossible');
+      editing = false;
+      return loadMultiLogin();
+    }).catch(function (error) {
+      alert('Erreur : ' + error.message);
+    }).then(function () { button.disabled = false; });
+  }
+
+  var tab = document.querySelector('.tab[data-tab="sessions"]');
+  if (tab) tab.addEventListener('click', function () { loadMultiLogin(); });
+  document.getElementById('multiLoginRefreshBtn').addEventListener('click', function () { editing = false; loadMultiLogin(); });
+  document.getElementById('multiLoginSaveBtn').addEventListener('click', saveMultiLogin);
+  ['multiLoginEnabled', 'multiLoginTimeout', 'multiLoginExcluded'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', function () { editing = true; updateMultiLoginInputs(); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="multiLoginMode"]'), function (input) {
+    input.addEventListener('change', function () { editing = true; updateMultiLoginInputs(); });
+  });
+  setInterval(function () {
+    if (loaded && document.getElementById('panel-sessions').classList.contains('active')) loadMultiLogin();
+  }, 10000);
 })();
 </script>
 

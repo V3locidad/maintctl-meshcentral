@@ -16,6 +16,8 @@ const RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
+const MULTI_LOGIN_EVENT_MAX = 100;
+const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
 const downloadTokens = {};         // token -> { kind, payload, expires }
@@ -42,6 +44,36 @@ const devActionWaiters = {};       // dispatchId -> { res, expires }
 const examBatches = {};            // batchId -> { res, expires, kind, pending: Set<dispatchId>, results: {nodeId: {...}}, nodes: [nodeId] }
 const examDidToBatch = {};         // dispatchId -> { batchId, nodeId }
 const examLocks = {};              // nodeId -> { until, mcHosts, options, lockedAt }
+
+function readMaintConfig() {
+    try {
+        if (!fs.existsSync(MAINT_CONFIG_FILE)) return {};
+        const parsed = JSON.parse(fs.readFileSync(MAINT_CONFIG_FILE, 'utf8'));
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (e) {
+        throw new Error('maintctl-config.json invalide : ' + e.message);
+    }
+}
+
+function writeMaintConfig(config) {
+    const tmp = MAINT_CONFIG_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+    fs.renameSync(tmp, MAINT_CONFIG_FILE);
+}
+
+function normalizeMultiLoginConfig(value) {
+    const input = value && typeof value === 'object' ? value : {};
+    const excluded = Array.isArray(input.excludedUsers) ? input.excludedUsers : [
+        'administrator', 'administrateur', 'admin', 'maintenance', 'system',
+        'local service', 'network service', 'defaultuser0', 'dwm-*', 'umfd-*',
+    ];
+    return {
+        enabled: input.enabled === true,
+        mode: input.mode === 'prompt' ? 'prompt' : 'block',
+        promptTimeoutSeconds: Math.max(15, Math.min(120, parseInt(input.promptTimeoutSeconds, 10) || 45)),
+        excludedUsers: excluded.map((v) => String(v || '').trim().toLowerCase()).filter(Boolean).slice(0, 100),
+    };
+}
 
 // Registre (ex-regctl) : dispatch + long-polling.
 //   regPending[id] = true tant qu'on attend l'agent
@@ -392,6 +424,219 @@ module.exports.maintctl = function (parent) {
     const __dir = __dirname;
     loadHistory(__dir);
 
+    let multiLoginConfig;
+    try { multiLoginConfig = normalizeMultiLoginConfig(readMaintConfig().multiLogin); }
+    catch (e) {
+        console.log('maintctl: ' + e.message);
+        multiLoginConfig = normalizeMultiLoginConfig(null);
+    }
+    const multiLoginNodes = {};       // nodeId -> { meshid, users:[{ key, display }], updatedAt }
+    const multiLoginNodeLabels = {};  // nodeId -> { name, meshid }
+    const multiLoginMeshLabels = {};  // meshId -> name
+    const multiLoginRequests = {};    // dispatchId -> proposition en cours
+    const multiLoginLogoffs = {};     // dispatchId -> fermeture demandée
+    const multiLoginEvents = [];
+
+    function multiLoginDisplay(value) {
+        let raw = value;
+        if (value && typeof value === 'object') {
+            const username = value.Username || value.UserName || value.username || value.name || '';
+            const domain = value.Domain || value.domain || '';
+            raw = username && domain && String(username).indexOf('\\') < 0 ? domain + '\\' + username : username;
+        }
+        return String(raw || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().substring(0, 256);
+    }
+
+    function multiLoginUserKey(value) {
+        let text = multiLoginDisplay(value).toLowerCase();
+        const slash = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+        if (slash >= 0) text = text.substring(slash + 1);
+        const at = text.indexOf('@');
+        if (at > 0) text = text.substring(0, at);
+        return text;
+    }
+
+    function multiLoginUsers(values) {
+        const out = [];
+        (Array.isArray(values) ? values : []).forEach((value) => {
+            const display = multiLoginDisplay(value);
+            const key = multiLoginUserKey(display);
+            if (!key || key.endsWith('$') || out.some((entry) => entry.key === key)) return;
+            out.push({ key: key, display: display });
+        });
+        return out;
+    }
+
+    function multiLoginExcluded(key) {
+        if (!key || key.endsWith('$')) return true;
+        return multiLoginConfig.excludedUsers.some((pattern) => {
+            if (pattern.indexOf('*') < 0) return key === multiLoginUserKey(pattern);
+            const re = '^' + pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$';
+            try { return new RegExp(re, 'i').test(key); } catch (_) { return false; }
+        });
+    }
+
+    function multiLoginNodeInfo(nodeId) {
+        const label = multiLoginNodeLabels[nodeId] || {};
+        const state = multiLoginNodes[nodeId] || {};
+        const meshid = label.meshid || state.meshid || '';
+        return {
+            nodeId: nodeId,
+            name: label.name || nodeId,
+            meshid: meshid,
+            mesh: multiLoginMeshLabels[meshid] || meshid || 'Salle inconnue',
+        };
+    }
+
+    function addMultiLoginEvent(event) {
+        multiLoginEvents.unshift(Object.assign({ time: Date.now() }, event));
+        if (multiLoginEvents.length > MULTI_LOGIN_EVENT_MAX) multiLoginEvents.length = MULTI_LOGIN_EVENT_MAX;
+    }
+
+    function sendMultiLoginAgent(nodeId, payload) {
+        const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        const agent = agents[nodeId];
+        if (!agent || typeof agent.send !== 'function') return false;
+        try {
+            agent.send(JSON.stringify(Object.assign({ action: 'plugin', plugin: 'maintctl' }, payload)));
+            return true;
+        } catch (_) { return false; }
+    }
+
+    function multiLoginRemoteSessions(nodeId, userKey) {
+        const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        return Object.keys(multiLoginNodes).filter((otherId) => {
+            if (otherId === nodeId || !agents[otherId]) return false;
+            const state = multiLoginNodes[otherId];
+            return !!(state && state.users && state.users.some((entry) => entry.key === userKey));
+        });
+    }
+
+    function requestMultiLoginLogoff(nodeId, username, message, requestId, targetKind) {
+        const dispatchId = 'ml-logoff-' + crypto.randomBytes(10).toString('hex');
+        multiLoginLogoffs[dispatchId] = {
+            nodeId: nodeId, username: username, requestId: requestId,
+            targetKind: targetKind, expires: Date.now() + 2 * 60 * 1000,
+        };
+        const sent = sendMultiLoginAgent(nodeId, {
+            pluginaction: 'duplicateSessionLogoff',
+            dispatchId: dispatchId,
+            username: username,
+            message: message,
+            warningSeconds: targetKind === 'remote' ? 10 : 3,
+        });
+        if (!sent) {
+            delete multiLoginLogoffs[dispatchId];
+            addMultiLoginEvent({
+                kind: 'error', username: username, nodeId: nodeId,
+                detail: 'Agent hors ligne pendant la fermeture de session',
+            });
+        }
+        return sent;
+    }
+
+    function enforceMultiLogin(nodeId, user) {
+        if (!multiLoginConfig.enabled || !user || multiLoginExcluded(user.key)) return;
+        const remoteNodeIds = multiLoginRemoteSessions(nodeId, user.key);
+        if (!remoteNodeIds.length) return;
+        const locations = remoteNodeIds.map(multiLoginNodeInfo);
+        const here = multiLoginNodeInfo(nodeId);
+        const dispatchId = 'ml-guard-' + crypto.randomBytes(10).toString('hex');
+        multiLoginRequests[dispatchId] = {
+            nodeId: nodeId,
+            username: user.display,
+            userKey: user.key,
+            remoteNodeIds: remoteNodeIds,
+            locations: locations,
+            mode: multiLoginConfig.mode,
+            expires: Date.now() + (multiLoginConfig.promptTimeoutSeconds + 60) * 1000,
+        };
+        const sent = sendMultiLoginAgent(nodeId, {
+            pluginaction: 'duplicateSessionGuard',
+            dispatchId: dispatchId,
+            username: user.display,
+            mode: multiLoginConfig.mode,
+            promptTimeoutSeconds: multiLoginConfig.promptTimeoutSeconds,
+            locations: locations.map((location) => location.mesh + ' — ' + location.name),
+        });
+        addMultiLoginEvent({
+            kind: sent ? 'detected' : 'error', username: user.display,
+            nodeId: nodeId, nodeName: here.name, mesh: here.mesh,
+            remoteNodeIds: remoteNodeIds,
+            detail: sent
+                ? 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                : 'Impossible de contacter le nouveau poste',
+        });
+        if (!sent) delete multiLoginRequests[dispatchId];
+    }
+
+    function refreshMultiLoginInventory(done) {
+        const db = obj.meshServer && obj.meshServer.db;
+        if (!db || typeof db.GetAllType !== 'function') { if (done) done(); return; }
+        db.GetAllType('mesh', function (_meshErr, meshes) {
+            (meshes || []).forEach((mesh) => {
+                if (mesh && mesh._id) multiLoginMeshLabels[mesh._id] = mesh.name || mesh._id;
+            });
+            db.GetAllType('node', function (_nodeErr, nodes) {
+                const online = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+                (nodes || []).forEach((node) => {
+                    if (!node || !node._id) return;
+                    multiLoginNodeLabels[node._id] = {
+                        name: node.name || node.host || node._id,
+                        meshid: node.meshid || '',
+                    };
+                    // Amorçage silencieux : une mise à jour/recharge du plugin ne
+                    // choisit jamais arbitrairement laquelle de deux sessions
+                    // déjà ouvertes doit être fermée.
+                    if (!multiLoginNodes[node._id] && online[node._id]) {
+                        multiLoginNodes[node._id] = {
+                            meshid: node.meshid || '',
+                            users: multiLoginUsers(node.users),
+                            updatedAt: Date.now(),
+                            primed: Array.isArray(node.users),
+                        };
+                    }
+                });
+                if (done) done();
+            });
+        });
+    }
+
+    function multiLoginStatus() {
+        const sessions = [];
+        const online = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        Object.keys(multiLoginNodes).forEach((nodeId) => {
+            if (!online[nodeId]) return;
+            const info = multiLoginNodeInfo(nodeId);
+            const state = multiLoginNodes[nodeId];
+            (state.users || []).forEach((user) => {
+                if (multiLoginExcluded(user.key)) return;
+                sessions.push(Object.assign({
+                    username: user.display,
+                    userKey: user.key,
+                    updatedAt: state.updatedAt,
+                }, info));
+            });
+        });
+        sessions.sort((a, b) => a.username.localeCompare(b.username, 'fr', { sensitivity: 'base' }) || a.name.localeCompare(b.name, 'fr', { numeric: true }));
+        const byUser = {};
+        sessions.forEach((session) => {
+            if (!byUser[session.userKey]) byUser[session.userKey] = [];
+            byUser[session.userKey].push(session);
+        });
+        const conflicts = Object.keys(byUser).filter((key) => byUser[key].length > 1).map((key) => ({
+            username: byUser[key][0].username,
+            sessions: byUser[key],
+        }));
+        return {
+            settings: multiLoginConfig,
+            sessions: sessions,
+            conflicts: conflicts,
+            events: multiLoginEvents.slice(0, 50),
+            pending: Object.keys(multiLoginRequests).length,
+        };
+    }
+
     function sendJson(res, code, payload) {
         res.status(code || 200).set('Content-Type', 'application/json').send(JSON.stringify(payload));
     }
@@ -623,6 +868,69 @@ module.exports.maintctl = function (parent) {
                 return;
             }
 
+            if (command.pluginaction === 'duplicateSessionGuardResult') {
+                const request = multiLoginRequests[command.dispatchId];
+                if (!request) return;
+                delete multiLoginRequests[command.dispatchId];
+                const keepNewSession = request.mode === 'prompt' && command.ok && command.decision === 'replace';
+                if (keepNewSession) {
+                    const destination = multiLoginNodeInfo(request.nodeId);
+                    request.remoteNodeIds.forEach((remoteNodeId) => {
+                        requestMultiLoginLogoff(
+                            remoteNodeId,
+                            request.username,
+                            'Votre session va être fermée : ce compte continue sur ' + destination.mesh + ' — ' + destination.name + '.',
+                            command.dispatchId,
+                            'remote'
+                        );
+                    });
+                    addMultiLoginEvent({
+                        kind: 'replace', username: request.username, nodeId: request.nodeId,
+                        detail: 'L’utilisateur a choisi de fermer la ou les sessions distantes',
+                    });
+                } else {
+                    requestMultiLoginLogoff(
+                        request.nodeId,
+                        request.username,
+                        request.mode === 'block'
+                            ? 'Cette nouvelle session va être fermée car les connexions multiples sont interdites.'
+                            : 'Cette session va être fermée ; la session déjà ouverte est conservée.',
+                        command.dispatchId,
+                        'new'
+                    );
+                    addMultiLoginEvent({
+                        kind: 'blocked', username: request.username, nodeId: request.nodeId,
+                        detail: command.ok ? 'Nouvelle session refusée' : 'Dialogue indisponible ; nouvelle session refusée par sécurité',
+                    });
+                }
+                return;
+            }
+
+            if (command.pluginaction === 'duplicateSessionLogoffResult') {
+                const request = multiLoginLogoffs[command.dispatchId];
+                if (!request) return;
+                delete multiLoginLogoffs[command.dispatchId];
+                addMultiLoginEvent({
+                    kind: command.ok ? 'logoff' : 'error',
+                    username: request.username,
+                    nodeId: request.nodeId,
+                    detail: command.ok
+                        ? String(command.closed || 1) + ' session(s) Windows fermée(s)'
+                        : 'Échec de fermeture : ' + (command.error || 'session introuvable'),
+                });
+                return;
+            }
+
+            if (command.pluginaction === 'unknownAction' && multiLoginRequests[command.dispatchId]) {
+                const request = multiLoginRequests[command.dispatchId];
+                delete multiLoginRequests[command.dispatchId];
+                addMultiLoginEvent({
+                    kind: 'error', username: request.username, nodeId: request.nodeId,
+                    detail: 'Module maintctl de l’agent trop ancien ; redémarrez MeshAgent après la mise à jour',
+                });
+                return;
+            }
+
             if (command.pluginaction !== 'cleanProgress' && command.pluginaction !== 'cleanComplete') return;
             const did = command.dispatchId;
             if (!did) return;
@@ -699,7 +1007,57 @@ module.exports.maintctl = function (parent) {
         }
     };
 
+    obj.hook_processAgentData = function (command, agent) {
+        try {
+            if (!command || command.action !== 'coreinfo' || !Array.isArray(command.users)) return;
+            const nodeId = agent && agent.dbNodeKey;
+            if (!nodeId) return;
+            const previous = multiLoginNodes[nodeId];
+            const users = multiLoginUsers(command.users);
+            multiLoginNodes[nodeId] = {
+                meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
+                users: users,
+                updatedAt: Date.now(),
+                primed: true,
+            };
+            if (!previous || previous.primed === false) return;
+            const oldKeys = previous.users.map((entry) => entry.key);
+            users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => enforceMultiLogin(nodeId, entry));
+        } catch (e) {
+            console.log('maintctl: multi-login coreinfo error: ' + e.message);
+        }
+    };
+
+    obj.HandleEvent = function (_source, event) {
+        try {
+            if (!event) return;
+            if (event.action === 'nodeconnect' && event.nodeid) {
+                const offline = ((event.conn != null) && ((Number(event.conn) & 1) === 0)) ||
+                    ((event.pwr != null) && Number(event.pwr) === 0);
+                if (offline) delete multiLoginNodes[event.nodeid];
+                else if (!multiLoginNodes[event.nodeid]) {
+                    multiLoginNodes[event.nodeid] = { meshid: event.meshid || '', users: [], updatedAt: Date.now(), primed: false };
+                }
+            } else if (event.action === 'stopped') {
+                Object.keys(multiLoginNodes).forEach((nodeId) => delete multiLoginNodes[nodeId]);
+            }
+        } catch (_) {}
+    };
+
     obj.server_startup = function () {
+        try {
+            const oldListener = obj.meshServer && obj.meshServer.__maintctlMultiLoginListener;
+            if (oldListener && oldListener !== obj && typeof obj.meshServer.RemoveAllEventDispatch === 'function') {
+                obj.meshServer.RemoveAllEventDispatch(oldListener);
+            }
+            if (obj.meshServer && typeof obj.meshServer.AddEventDispatch === 'function') {
+                obj.meshServer.AddEventDispatch(['*'], obj);
+            }
+            if (obj.meshServer) obj.meshServer.__maintctlMultiLoginListener = obj;
+            refreshMultiLoginInventory();
+        } catch (e) {
+            console.log('maintctl: initialisation connexions multiples: ' + e.message);
+        }
         const ws = obj.meshServer && obj.meshServer.webserver;
         const app = ws && ws.app;
         if (!app || typeof app.get !== 'function') {
@@ -816,6 +1174,45 @@ module.exports.maintctl = function (parent) {
 
         if (action === 'ping') {
             return sendJson(res, 200, { ok: true, runs: Object.keys(runs).length });
+        }
+
+        if (action === 'multiLoginStatus') {
+            const now = Date.now();
+            Object.keys(multiLoginRequests).forEach((id) => {
+                if (multiLoginRequests[id].expires < now) delete multiLoginRequests[id];
+            });
+            Object.keys(multiLoginLogoffs).forEach((id) => {
+                if (multiLoginLogoffs[id].expires < now) delete multiLoginLogoffs[id];
+            });
+            return refreshMultiLoginInventory(function () {
+                sendJson(res, 200, multiLoginStatus());
+            });
+        }
+
+        if (action === 'multiLoginSave') {
+            let payload;
+            try { payload = JSON.parse((req.query && req.query.payload) || '{}'); }
+            catch (e) { return sendJson(res, 400, { error: 'payload JSON invalide' }); }
+            try {
+                const config = readMaintConfig();
+                const next = normalizeMultiLoginConfig(payload);
+                config.multiLogin = next;
+                writeMaintConfig(config);
+                multiLoginConfig = next;
+                if (!next.enabled) {
+                    Object.keys(multiLoginRequests).forEach((id) => delete multiLoginRequests[id]);
+                }
+                addMultiLoginEvent({
+                    kind: 'settings',
+                    username: (user && (user.name || user._id)) || 'administrateur',
+                    detail: next.enabled
+                        ? 'Blocage des connexions multiples activé (' + (next.mode === 'prompt' ? 'proposition de remplacement' : 'refus') + ')'
+                        : 'Connexions multiples autorisées',
+                });
+                return sendJson(res, 200, { ok: true, settings: next });
+            } catch (e) {
+                return sendJson(res, 500, { error: e.message });
+            }
         }
 
         if (action === 'nodeHistory') {
