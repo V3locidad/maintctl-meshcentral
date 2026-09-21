@@ -1,7 +1,7 @@
 {
   "name": "maintctl",
   "shortName": "maintctl",
-  "version": "0.14.3",
+  "version": "0.14.4",
   "author": "V3locidad",
   "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage, périphériques, drivers, santé, événements, registre, mode Examen et contrôle des connexions Windows simultanées sur plusieurs postes.",
   "hasAdminPanel": true,

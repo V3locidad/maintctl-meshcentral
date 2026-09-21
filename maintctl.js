@@ -439,6 +439,7 @@ module.exports.maintctl = function (parent) {
     const multiLoginEvents = [];
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
+    const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
 
     function multiLoginDisplay(value) {
         let raw = value;
@@ -574,7 +575,11 @@ module.exports.maintctl = function (parent) {
             // L'événement Security est reçu juste après l'authentification et
             // devient la réservation atomique. Le premier poste gagne ; le
             // second est fermé sans attendre la prochaine remontée coreinfo.
-            if (!alreadyKnown) enforceMultiLogin(nodeId, user, {
+            // Même si coreinfo avait déjà placé le compte dans l'inventaire,
+            // ce 4624 représente une nouvelle authentification réelle. Il
+            // faut donc contrôler à nouveau ; enforceMultiLogin déduplique le
+            // couple coreinfo/4624 reçu pour la même ouverture de session.
+            enforceMultiLogin(nodeId, user, {
                 immediate: true,
                 source: 'eventlog',
                 logonId: String(command.logonId || ''),
@@ -634,6 +639,18 @@ module.exports.maintctl = function (parent) {
         if (!multiLoginConfig.enabled || !user || multiLoginExcluded(user.key)) return;
         const remoteNodeIds = multiLoginRemoteSessions(nodeId, user.key);
         if (!remoteNodeIds.length) return;
+        const enforcementKey = nodeId + '/' + user.key;
+        const now = Date.now();
+        if (multiLoginRecentEnforcements[enforcementKey] && now - multiLoginRecentEnforcements[enforcementKey] < 10000) return;
+        const alreadyPending = Object.keys(multiLoginRequests).some((id) => {
+            const pending = multiLoginRequests[id];
+            return pending && pending.nodeId === nodeId && pending.userKey === user.key;
+        });
+        if (alreadyPending) return;
+        multiLoginRecentEnforcements[enforcementKey] = now;
+        Object.keys(multiLoginRecentEnforcements).forEach((key) => {
+            if (now - multiLoginRecentEnforcements[key] > 60000) delete multiLoginRecentEnforcements[key];
+        });
         const locations = remoteNodeIds.map(multiLoginNodeInfo);
         const here = multiLoginNodeInfo(nodeId);
 

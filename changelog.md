@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.4
+
+- Un nouvel événement Windows `4624` déclenche désormais le contrôle même si l’inventaire `coreinfo` considère déjà l’utilisateur présent sur le poste.
+- Cette situation se produisait notamment après un essai incomplet ou après le redémarrage du plugin avec deux sessions déjà recensées : aucune commande de dialogue n’était alors envoyée.
+- Une déduplication de dix secondes empêche toutefois `coreinfo` et le journal Windows d’afficher deux dialogues pour la même ouverture de session.
+
 ## 0.14.3
 
 - Les choix Oui/Non sont maintenant écrits dans un fichier de résultat ASCII surveillé toutes les 250 ms par MeshAgent ; l’action ne dépend plus de la remontée de stdout ni de l’événement `exit` du PowerShell.
