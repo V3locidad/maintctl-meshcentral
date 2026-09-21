@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.3
+
+- Les choix Oui/Non sont maintenant écrits dans un fichier de résultat ASCII surveillé toutes les 250 ms par MeshAgent ; l’action ne dépend plus de la remontée de stdout ni de l’événement `exit` du PowerShell.
+- Le choix Oui déclenche systématiquement la fermeture du poste distant, tandis que Non déclenche une commande séparée de fermeture immédiate sur la nouvelle session.
+- Les caractères français du dialogue sont déclarés avec des séquences Unicode ASCII dans le module agent avant leur encodage Base64, ce qui empêche MeshAgent de supprimer `é`, `à` ou `ê` au chargement du code.
+
 ## 0.14.2
 
 - Le mode proposition attend maintenant que la nouvelle session WTS soit réellement `Active` ou `Connected` avant d’afficher la question ; l’événement `4624` arrivait parfois trop tôt pour que Windows accepte le dialogue.

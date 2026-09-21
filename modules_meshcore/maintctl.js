@@ -383,7 +383,7 @@ function runDelprof2(exePath, days, timeoutMs, onDone) {
     }, timeoutMs);
 }
 
-function runPowerShell(script, timeoutMs, onDone) {
+function runPowerShell(script, timeoutMs, onDone, resultFile) {
     var fs = require('fs');
     var cp = require('child_process');
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
@@ -392,6 +392,21 @@ function runPowerShell(script, timeoutMs, onDone) {
     var done = false;
     var bytes = 0;
     var note = '';
+    var resultPollTimer = null;
+
+    function parseResultText(text) {
+        var found = false;
+        var resultRe = /(?:^|\r?\n)RESULT:(\d+):([^\r\n]*)/g;
+        var resultMatch;
+        while ((resultMatch = resultRe.exec(String(text || ''))) !== null) {
+            bytes = parseInt(resultMatch[1], 10) || 0;
+            note = resultMatch[2] || '';
+            found = true;
+        }
+        return found;
+    }
+
+    if (resultFile) { try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {} }
 
     try { fs.writeFileSync(ps1, script); }
     catch (e) { onDone(false, 0, '', 'write ps1 failed: ' + e); return; }
@@ -409,11 +424,7 @@ function runPowerShell(script, timeoutMs, onDone) {
         child.stdout.on('data', function (d) {
             var s = d.toString();
             log += s;
-            var lines = s.split(/\r?\n/);
-            for (var i = 0; i < lines.length; i++) {
-                var m = lines[i].match(/^RESULT:(\d+):(.*)$/);
-                if (m) { bytes = parseInt(m[1], 10) || 0; note = m[2] || ''; }
-            }
+            parseResultText(s);
         });
     }
     if (child.stderr) {
@@ -426,17 +437,29 @@ function runPowerShell(script, timeoutMs, onDone) {
         // Une ligne stdout peut être coupée entre deux événements 'data'.
         // Refaire le parsing sur le journal complet évite de perdre IDYES (6)
         // et de traiter par erreur le choix « Oui » comme un refus.
-        var resultRe = /(?:^|\r?\n)RESULT:(\d+):([^\r\n]*)/g;
-        var resultMatch;
-        while ((resultMatch = resultRe.exec(log)) !== null) {
-            bytes = parseInt(resultMatch[1], 10) || 0;
-            note = resultMatch[2] || '';
-        }
+        parseResultText(log);
+        if (resultPollTimer) { try { clearInterval(resultPollTimer); } catch (_) {} }
         try { fs.unlinkSync(ps1); } catch (_) {}
+        if (resultFile) { try { fs.unlinkSync(resultFile); } catch (_) {} }
         onDone(ok, bytes, log, note || (err || ''));
     }
 
     child.on('exit', function () { finish(true, ''); });
+
+    // MeshAgent/Duktape ne remonte pas toujours immédiatement l'événement
+    // 'exit' d'un PowerShell resté longtemps bloqué dans WTSSendMessage.
+    // Le dialogue écrit donc aussi sa décision dans un fichier ASCII ; sa
+    // présence déclenche la réponse au serveur sans dépendre de stdout/exit.
+    if (resultFile) {
+        resultPollTimer = setInterval(function () {
+            if (done) return;
+            try {
+                if (!fs.existsSync(resultFile)) return;
+                var resultText = fs.readFileSync(resultFile).toString();
+                if (parseResultText(resultText)) finish(true, '');
+            } catch (e) { dbg('runPowerShell result file: ' + e); }
+        }, 250);
+    }
 
     setTimeout(function () {
         if (done) return;
@@ -749,33 +772,21 @@ function duplicateWtsType(includeLogoff) {
         + 'Add-Type -TypeDefinition $source -ErrorAction Stop;';
 }
 
-function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds) {
+function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds, resultFile) {
     var style = (yesNo ? 4 : 0) + 48 + 65536 + 262144; // Yes/No ou OK, warning, foreground, topmost
     return ''
         + '$ErrorActionPreference = "Stop";'
-        + duplicateWtsType(true)
+        + duplicateWtsType(false)
         + '$title = ' + duplicatePsUtf8(title) + ';'
         + '$message = ' + duplicatePsUtf8(message) + ';'
         + '$response = 0;'
         + '$ok = [MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),' + style + ',' + parseInt(timeoutSeconds, 10) + ',[ref]$response,$true);'
         + '$closed = 0;'
-        + '$shouldClose = ' + (yesNo ? '($response -ne 6)' : '$true') + ';'
-        + 'if ($shouldClose) {'
-        + '  $wtsDone = [MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$true);'
-        // Toujours tenter aussi logoff.exe : si WTS annonce un succès mais que
-        // la console reste visible, la commande cible à nouveau le même ID.
-        + '  $logoffExe = Join-Path $env:SystemRoot "System32\\logoff.exe";'
-        + '  & $logoffExe ' + parseInt(sessionId, 10) + ' 2>$null;'
-        + '  $cliDone = ($LASTEXITCODE -eq 0);'
-        + '  $resetDone = $false;'
-        + '  if (-not ($wtsDone -or $cliDone)) {'
-        + '    $resetExe = Join-Path $env:SystemRoot "System32\\rwinsta.exe";'
-        + '    & $resetExe ' + parseInt(sessionId, 10) + ' 2>$null;'
-        + '    $resetDone = ($LASTEXITCODE -eq 0);'
-        + '  }'
-        + '  if ($wtsDone -or $cliDone -or $resetDone) { $closed = 1 }'
-        + '}'
-        + 'Write-Host ("RESULT:" + $response + ":closed=" + $closed + ";prompt=" + $(if ($ok) { "ok" } else { "failed" }));';
+        + '$resultLine = "RESULT:" + $response + ":closed=" + $closed + ";prompt=" + $(if ($ok) { "ok" } else { "failed" });'
+        + (resultFile
+            ? '[IO.File]::WriteAllText(' + duplicatePsLiteral(resultFile) + ',$resultLine,[Text.Encoding]::ASCII);'
+            : '')
+        + 'Write-Host $resultLine;';
 }
 
 function doDuplicateSessionGuard(args) {
@@ -796,15 +807,18 @@ function doDuplicateSessionGuard(args) {
         var where = locations.length ? locations.join(' ; ') : 'un autre poste';
         var promptMode = args.mode === 'prompt';
         var message = promptMode
-            ? 'Le compte ' + args.username + ' est déjà connecté sur :\r\n\r\n' + where + '\r\n\r\nSouhaitez-vous fermer la session distante et continuer sur ce poste ?\r\n\r\nOui : fermer la session distante\r\nNon : annuler cette nouvelle connexion'
-            : 'Connexion refusée.\r\n\r\nLe compte ' + args.username + ' est déjà connecté sur :\r\n\r\n' + where + '\r\n\r\nCette nouvelle session va être fermée.';
+            ? 'Le compte ' + args.username + ' est d\u00e9j\u00e0 connect\u00e9 sur :\r\n\r\n' + where + '\r\n\r\nSouhaitez-vous fermer la session distante et continuer sur ce poste ?\r\n\r\nOui : fermer la session distante\r\nNon : annuler cette nouvelle connexion'
+            : 'Connexion refus\u00e9e.\r\n\r\nLe compte ' + args.username + ' est d\u00e9j\u00e0 connect\u00e9 sur :\r\n\r\n' + where + '\r\n\r\nCette nouvelle session va \u00eatre ferm\u00e9e.';
         var timeout = promptMode
             ? Math.max(15, Math.min(120, parseInt(args.promptTimeoutSeconds, 10) || 45))
             : 5;
-        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
+        var resultFile = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp')
+            + '\\maintctl_guard_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
+        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion d\u00e9j\u00e0 ouverte', message, promptMode, timeout, resultFile);
         runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
             dbg('duplicateSessionGuard result: ok=' + ok + ', response=' + response + ', note=' + note + ', log=' + String(log || '').slice(-2000));
-            var accepted = promptMode && response === 6; // IDYES
+            var promptSucceeded = !!(ok && String(note || '').indexOf('prompt=ok') >= 0);
+            var accepted = promptMode && promptSucceeded && response === 6; // IDYES
             var closedMatch = String(note || '').match(/closed=(\d+)/);
             var closed = closedMatch ? parseInt(closedMatch[1], 10) || 0 : 0;
             if (accepted) {
@@ -822,15 +836,15 @@ function doDuplicateSessionGuard(args) {
             reply({
                 pluginaction: 'duplicateSessionGuardResult',
                 dispatchId: args.dispatchId,
-                ok: !!(ok && closed > 0),
+                ok: promptSucceeded,
                 decision: 'deny',
                 response: response || 0,
                 localClosed: closed > 0,
                 closed: closed,
-                error: closed > 0 ? null : (note || 'fermeture locale impossible'),
+                error: promptSucceeded ? null : (note || 'dialogue Windows impossible'),
                 logTail: (log || '').slice(-1500),
             });
-        });
+        }, resultFile);
     }, 250, true);
 }
 
