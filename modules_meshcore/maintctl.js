@@ -491,16 +491,33 @@ function duplicateWtsType(includeLogoff) {
         + 'Add-Type -TypeDefinition $source -ErrorAction Stop;';
 }
 
-function buildDuplicatePromptScript(sessionId, title, message, yesNo, timeoutSeconds) {
+function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds) {
     var style = (yesNo ? 4 : 0) + 48 + 65536 + 262144; // Yes/No ou OK, warning, foreground, topmost
     return ''
         + '$ErrorActionPreference = "Stop";'
-        + duplicateWtsType(false)
+        + duplicateWtsType(true)
         + '$title = ' + duplicatePsLiteral(title) + ';'
         + '$message = ' + duplicatePsLiteral(message) + ';'
         + '$response = 0;'
         + '$ok = [MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),' + style + ',' + parseInt(timeoutSeconds, 10) + ',[ref]$response,$true);'
-        + 'Write-Host ("RESULT:" + $response + ":" + $(if ($ok) { "prompt-ok" } else { "prompt-failed" }));';
+        + '$closed = 0;'
+        + '$shouldClose = ' + (yesNo ? '($response -ne 6)' : '$true') + ';'
+        + 'if ($shouldClose) {'
+        + '  $wtsDone = [MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$true);'
+        // Toujours tenter aussi logoff.exe : si WTS annonce un succès mais que
+        // la console reste visible, la commande cible à nouveau le même ID.
+        + '  $logoffExe = Join-Path $env:SystemRoot "System32\\logoff.exe";'
+        + '  & $logoffExe ' + parseInt(sessionId, 10) + ' 2>$null;'
+        + '  $cliDone = ($LASTEXITCODE -eq 0);'
+        + '  $resetDone = $false;'
+        + '  if (-not ($wtsDone -or $cliDone)) {'
+        + '    $resetExe = Join-Path $env:SystemRoot "System32\\rwinsta.exe";'
+        + '    & $resetExe ' + parseInt(sessionId, 10) + ' 2>$null;'
+        + '    $resetDone = ($LASTEXITCODE -eq 0);'
+        + '  }'
+        + '  if ($wtsDone -or $cliDone -or $resetDone) { $closed = 1 }'
+        + '}'
+        + 'Write-Host ("RESULT:" + $response + ":closed=" + $closed + ";prompt=" + $(if ($ok) { "ok" } else { "failed" }));';
 }
 
 function doDuplicateSessionGuard(args) {
@@ -517,14 +534,16 @@ function doDuplicateSessionGuard(args) {
         var where = locations.length ? locations.join(' ; ') : 'un autre poste';
         var promptMode = args.mode === 'prompt';
         var message = promptMode
-            ? 'Le compte ' + args.username + ' est déjà ouvert sur : ' + where + '. Voulez-vous fermer la ou les sessions distantes et continuer sur ce poste ? Oui = fermer à distance. Non = fermer cette nouvelle session.'
-            : 'Connexion multiple interdite. Le compte ' + args.username + ' est déjà ouvert sur : ' + where + '. Cette nouvelle session va être fermée.';
+            ? 'Le compte ' + args.username + ' est deja ouvert sur : ' + where + '. Voulez-vous fermer la ou les sessions distantes et continuer sur ce poste ? Oui = fermer a distance. Non = fermer cette nouvelle session.'
+            : 'Connexion multiple interdite. Le compte ' + args.username + ' est deja ouvert sur : ' + where + '. Cette nouvelle session va se fermer automatiquement.';
         var timeout = promptMode
             ? Math.max(15, Math.min(120, parseInt(args.promptTimeoutSeconds, 10) || 45))
-            : 15;
-        var script = buildDuplicatePromptScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
+            : 5;
+        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion deja ouverte', message, promptMode, timeout);
         runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
             var accepted = promptMode && response === 6; // IDYES
+            var closedMatch = String(note || '').match(/closed=(\d+)/);
+            var closed = closedMatch ? parseInt(closedMatch[1], 10) || 0 : 0;
             if (accepted) {
                 reply({
                     pluginaction: 'duplicateSessionGuardResult',
@@ -537,21 +556,16 @@ function doDuplicateSessionGuard(args) {
                 });
                 return;
             }
-            // Le blocage local ne dépend plus d'un second aller-retour avec le
-            // serveur : l'agent ferme lui-même la session qu'il vient de
-            // détecter, juste après le message Windows.
-            executeDuplicateLogoff(sessions, '', 0, function (closedOk, closed, closeLog, closeError) {
-                reply({
-                    pluginaction: 'duplicateSessionGuardResult',
-                    dispatchId: args.dispatchId,
-                    ok: closedOk,
-                    decision: 'deny',
-                    response: response || 0,
-                    localClosed: closed > 0,
-                    closed: closed || 0,
-                    error: closed > 0 ? null : (closeError || note || 'fermeture locale impossible'),
-                    logTail: ((log || '') + '\n' + (closeLog || '')).slice(-1500),
-                });
+            reply({
+                pluginaction: 'duplicateSessionGuardResult',
+                dispatchId: args.dispatchId,
+                ok: !!(ok && closed > 0),
+                decision: 'deny',
+                response: response || 0,
+                localClosed: closed > 0,
+                closed: closed,
+                error: closed > 0 ? null : (note || 'fermeture locale impossible'),
+                logTail: (log || '').slice(-1500),
             });
         });
     });
@@ -570,14 +584,17 @@ function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) 
         + (warningSeconds > 0
             ? '  $response = 0; [void][MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,$id,$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),327728,' + parseInt(warningSeconds, 10) + ',[ref]$response,$true);'
             : '')
-        + '  $done = [MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,$id,$true);'
-        // Certains environnements refusent WTSLogoffSession malgré le compte
-        // SYSTEM. logoff.exe avec l'identifiant WTS sert alors de secours.
-        + '  if (-not $done) {'
-        + '    $logoffExe = Join-Path $env:SystemRoot "System32\\logoff.exe";'
-        + '    & $logoffExe $id 2>$null;'
-        + '    $done = ($LASTEXITCODE -eq 0);'
+        + '  $wtsDone = [MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,$id,$true);'
+        + '  $logoffExe = Join-Path $env:SystemRoot "System32\\logoff.exe";'
+        + '  & $logoffExe $id 2>$null;'
+        + '  $cliDone = ($LASTEXITCODE -eq 0);'
+        + '  $resetDone = $false;'
+        + '  if (-not ($wtsDone -or $cliDone)) {'
+        + '    $resetExe = Join-Path $env:SystemRoot "System32\\rwinsta.exe";'
+        + '    & $resetExe $id 2>$null;'
+        + '    $resetDone = ($LASTEXITCODE -eq 0);'
         + '  }'
+        + '  $done = $wtsDone -or $cliDone -or $resetDone;'
         + '  if ($done) { $closed++ }'
         + '}'
         + 'Write-Host ("RESULT:" + $closed + ":logoff");';
