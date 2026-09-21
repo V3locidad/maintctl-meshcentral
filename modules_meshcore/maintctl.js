@@ -17,6 +17,7 @@ var duplicateWatcherEnabled = false;
 var duplicateWatcherRestartTimer = null;
 var duplicateWatcherBuffer = '';
 var duplicateWatcherGeneration = 0;
+var maintctlTempCleanupAt = 0;
 
 function dbg(m) {
     // Écrit à un chemin connu et fixe (et pas via createWriteStream qui
@@ -41,8 +42,56 @@ function reply(payload) {
     } catch (e) { dbg('reply error: ' + e); }
 }
 
+function cleanupMaintctlTempArtifacts(force) {
+    if (process.platform !== 'win32') return 0;
+    var now = Date.now();
+    // Une seule analyse toutes les dix minutes suffit. Le premier appel après
+    // le chargement du module est toujours exécuté.
+    if (!force && maintctlTempCleanupAt && (now - maintctlTempCleanupAt) < 10 * 60 * 1000) return 0;
+    maintctlTempCleanupAt = now;
+
+    var fs = require('fs');
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var removed = 0;
+    var staleAfterMs = 60 * 60 * 1000;
+    var names;
+    try { names = fs.readdirSync(tmpRoot); }
+    catch (e) { dbg('temp cleanup listing: ' + e); return 0; }
+
+    for (var i = 0; i < names.length; i++) {
+        var name = String(names[i] || '');
+        // Correspond uniquement aux artefacts temporaires propres au plugin.
+        // maintctl-agent.log et maintctl-logon-watch.ps1 sont volontairement
+        // exclus : le premier est rotatif, le second alimente le watcher actif.
+        var match = name.match(/^maintctl_(?:guard_|delprof_|dd_|evt_|dev_|reg_|drv_)?(\d{12,})(?:_\d+)?\.(?:ps1|txt|json|zip)$/i);
+        var fixed = /^maintctl_delprof_(?:out|err)\.txt$/i.test(name);
+        if (!match && !fixed) continue;
+
+        var full = tmpRoot + '\\' + name;
+        var fileTime = match ? (parseInt(match[1], 10) || 0) : 0;
+        try {
+            var stat = fs.statSync(full);
+            if (stat && typeof stat.isDirectory === 'function' && stat.isDirectory()) continue;
+            if (!fileTime && stat) {
+                if (typeof stat.mtimeMs === 'number') fileTime = stat.mtimeMs;
+                else if (stat.mtime && typeof stat.mtime.getTime === 'function') fileTime = stat.mtime.getTime();
+                else if (stat.mtime) fileTime = new Date(stat.mtime).getTime();
+            }
+            if (!fileTime || (now - fileTime) < staleAfterMs) continue;
+            fs.unlinkSync(full);
+            removed++;
+        } catch (e2) {
+            // Un fichier encore utilisé est simplement conservé pour le
+            // prochain passage ; aucune autre donnée du dossier n'est touchée.
+        }
+    }
+    if (removed > 0) dbg('temp cleanup: ' + removed + ' artefact(s) maintctl supprimé(s)');
+    return removed;
+}
+
 function consoleaction(args, rights, sessionid, parent) {
     mesh = parent;
+    cleanupMaintctlTempArtifacts(false);
     var fnname = args.pluginaction || (args._ && args._[1]);
     dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
     try {
@@ -418,7 +467,11 @@ function runPowerShell(script, timeoutMs, onDone, resultFile) {
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive',
             '-File', ps1
         ]);
-    } catch (e) { onDone(false, 0, '', 'spawn failed: ' + e); return; }
+    } catch (e) {
+        try { fs.unlinkSync(ps1); } catch (_) {}
+        onDone(false, 0, '', 'spawn failed: ' + e);
+        return;
+    }
 
     if (child.stdout) {
         child.stdout.on('data', function (d) {
@@ -445,6 +498,7 @@ function runPowerShell(script, timeoutMs, onDone, resultFile) {
     }
 
     child.on('exit', function () { finish(true, ''); });
+    child.on('error', function (e) { finish(false, 'process error: ' + e); });
 
     // MeshAgent/Duktape ne remonte pas toujours immédiatement l'événement
     // 'exit' d'un PowerShell resté longtemps bloqué dans WTSSendMessage.

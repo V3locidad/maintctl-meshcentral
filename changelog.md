@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.6
+
+- Nettoyage automatique et strictement ciblé des anciens fichiers temporaires `maintctl_*.ps1`, résultats JSON/TXT et archives ZIP abandonnés depuis plus d’une heure.
+- Le nettoyage est exécuté au premier appel du module puis au maximum toutes les dix minutes ; il ne touche ni les fichiers d’autres logiciels ni les journaux nommés d’après les postes.
+- Un script PowerShell temporaire est maintenant supprimé immédiatement si son processus ne peut pas être démarré ou signale une erreur.
+- `maintctl-agent.log` reste limité par rotation et l’unique `maintctl-logon-watch.ps1` est conservé pendant la surveillance des connexions Windows.
+
 ## 0.14.5
 
 - La boîte Oui/Non est maintenant créée par le module natif `message-box` de MeshAgent directement dans l’identifiant de session Windows concerné.
