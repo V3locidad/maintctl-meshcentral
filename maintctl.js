@@ -567,7 +567,32 @@ module.exports.maintctl = function (parent) {
                 ? 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
                 : 'Impossible de contacter le nouveau poste',
         });
-        if (!sent) delete multiLoginRequests[dispatchId];
+        if (!sent) {
+            delete multiLoginRequests[dispatchId];
+            return;
+        }
+        // Filet de sécurité : si l'agent affiche le dialogue mais que sa
+        // réponse se perd, la nouvelle session est tout de même fermée.
+        const fallbackDelay = multiLoginConfig.mode === 'block'
+            ? 30 * 1000
+            : (multiLoginConfig.promptTimeoutSeconds + 20) * 1000;
+        const fallbackTimer = setTimeout(() => {
+            const pending = multiLoginRequests[dispatchId];
+            if (!pending) return;
+            delete multiLoginRequests[dispatchId];
+            requestMultiLoginLogoff(
+                pending.nodeId,
+                pending.username,
+                'La réponse au contrôle de connexion n’a pas été reçue. Cette nouvelle session va être fermée par sécurité.',
+                dispatchId,
+                'new'
+            );
+            addMultiLoginEvent({
+                kind: 'fallback', username: pending.username, nodeId: pending.nodeId,
+                detail: 'Réponse du dialogue absente ; fermeture de sécurité demandée',
+            });
+        }, fallbackDelay);
+        if (fallbackTimer && typeof fallbackTimer.unref === 'function') fallbackTimer.unref();
     }
 
     function refreshMultiLoginInventory(done) {
@@ -889,18 +914,27 @@ module.exports.maintctl = function (parent) {
                         detail: 'L’utilisateur a choisi de fermer la ou les sessions distantes',
                     });
                 } else {
-                    requestMultiLoginLogoff(
-                        request.nodeId,
-                        request.username,
-                        request.mode === 'block'
-                            ? 'Cette nouvelle session va être fermée car les connexions multiples sont interdites.'
-                            : 'Cette session va être fermée ; la session déjà ouverte est conservée.',
-                        command.dispatchId,
-                        'new'
-                    );
+                    // Depuis 0.13.1 l'agent ferme directement la nouvelle
+                    // session après le dialogue. Le second dispatch reste un
+                    // secours compatible avec les agents 0.13.0.
+                    if (!command.localClosed) {
+                        requestMultiLoginLogoff(
+                            request.nodeId,
+                            request.username,
+                            request.mode === 'block'
+                                ? 'Cette nouvelle session va être fermée car les connexions multiples sont interdites.'
+                                : 'Cette session va être fermée ; la session déjà ouverte est conservée.',
+                            command.dispatchId,
+                            'new'
+                        );
+                    }
                     addMultiLoginEvent({
-                        kind: 'blocked', username: request.username, nodeId: request.nodeId,
-                        detail: command.ok ? 'Nouvelle session refusée' : 'Dialogue indisponible ; nouvelle session refusée par sécurité',
+                        kind: command.localClosed ? 'blocked' : (command.ok ? 'blocked' : 'error'),
+                        username: request.username,
+                        nodeId: request.nodeId,
+                        detail: command.localClosed
+                            ? 'Nouvelle session refusée et fermée directement par l’agent'
+                            : (command.ok ? 'Nouvelle session refusée ; fermeture de secours demandée' : 'Fermeture directe impossible ; nouvelle tentative demandée'),
                     });
                 }
                 return;

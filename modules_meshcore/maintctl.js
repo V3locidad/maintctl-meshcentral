@@ -525,14 +525,33 @@ function doDuplicateSessionGuard(args) {
         var script = buildDuplicatePromptScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
         runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
             var accepted = promptMode && response === 6; // IDYES
-            reply({
-                pluginaction: 'duplicateSessionGuardResult',
-                dispatchId: args.dispatchId,
-                ok: !!(ok && response),
-                decision: accepted ? 'replace' : 'deny',
-                response: response || 0,
-                error: response ? null : (note || 'dialogue Windows indisponible'),
-                logTail: (log || '').slice(-1000),
+            if (accepted) {
+                reply({
+                    pluginaction: 'duplicateSessionGuardResult',
+                    dispatchId: args.dispatchId,
+                    ok: true,
+                    decision: 'replace',
+                    response: response || 0,
+                    localClosed: false,
+                    logTail: (log || '').slice(-1000),
+                });
+                return;
+            }
+            // Le blocage local ne dépend plus d'un second aller-retour avec le
+            // serveur : l'agent ferme lui-même la session qu'il vient de
+            // détecter, juste après le message Windows.
+            executeDuplicateLogoff(sessions, '', 0, function (closedOk, closed, closeLog, closeError) {
+                reply({
+                    pluginaction: 'duplicateSessionGuardResult',
+                    dispatchId: args.dispatchId,
+                    ok: closedOk,
+                    decision: 'deny',
+                    response: response || 0,
+                    localClosed: closed > 0,
+                    closed: closed || 0,
+                    error: closed > 0 ? null : (closeError || note || 'fermeture locale impossible'),
+                    logTail: ((log || '') + '\n' + (closeLog || '')).slice(-1500),
+                });
             });
         });
     });
@@ -551,9 +570,29 @@ function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) 
         + (warningSeconds > 0
             ? '  $response = 0; [void][MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,$id,$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),327728,' + parseInt(warningSeconds, 10) + ',[ref]$response,$true);'
             : '')
-        + '  if ([MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,$id,$true)) { $closed++ }'
+        + '  $done = [MaintctlWts]::WTSLogoffSession([IntPtr]::Zero,$id,$true);'
+        // Certains environnements refusent WTSLogoffSession malgré le compte
+        // SYSTEM. logoff.exe avec l'identifiant WTS sert alors de secours.
+        + '  if (-not $done) {'
+        + '    $logoffExe = Join-Path $env:SystemRoot "System32\\logoff.exe";'
+        + '    & $logoffExe $id 2>$null;'
+        + '    $done = ($LASTEXITCODE -eq 0);'
+        + '  }'
+        + '  if ($done) { $closed++ }'
         + '}'
         + 'Write-Host ("RESULT:" + $closed + ":logoff");';
+}
+
+function executeDuplicateLogoff(sessions, message, warning, callback) {
+    var script = buildDuplicateLogoffScript(
+        sessions.map(function (session) { return session.id; }),
+        'Fermeture de session',
+        message || 'Cette session Windows va être fermée.',
+        warning
+    );
+    runPowerShell(script, (30 + warning * sessions.length) * 1000, function (ok, closed, log, note) {
+        callback(!!(ok && closed > 0), closed || 0, log || '', closed > 0 ? null : (note || 'WTSLogoffSession et logoff.exe ont échoué'));
+    });
 }
 
 function doDuplicateSessionLogoff(args) {
@@ -567,19 +606,13 @@ function doDuplicateSessionLogoff(args) {
             return;
         }
         var warning = Math.max(0, Math.min(30, parseInt(args.warningSeconds, 10) || 0));
-        var script = buildDuplicateLogoffScript(
-            sessions.map(function (session) { return session.id; }),
-            'Fermeture de session',
-            args.message || 'Cette session Windows va être fermée.',
-            warning
-        );
-        runPowerShell(script, (30 + warning * sessions.length) * 1000, function (ok, closed, log, note) {
+        executeDuplicateLogoff(sessions, args.message || 'Cette session Windows va être fermée.', warning, function (ok, closed, log, error) {
             reply({
                 pluginaction: 'duplicateSessionLogoffResult',
                 dispatchId: args.dispatchId,
-                ok: !!(ok && closed > 0),
+                ok: ok,
                 closed: closed || 0,
-                error: closed > 0 ? null : (note || 'WTSLogoffSession a échoué'),
+                error: error,
                 logTail: (log || '').slice(-1000),
             });
         });
