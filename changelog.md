@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2
+
+- Le mode proposition attend maintenant que la nouvelle session WTS soit réellement `Active` ou `Connected` avant d’afficher la question ; l’événement `4624` arrivait parfois trop tôt pour que Windows accepte le dialogue.
+- Le délai de sécurité côté serveur tient compte de cette attente et ne ferme plus la session pendant que la boîte de dialogue est encore utilisable.
+- Suppression du BOM PowerShell ajouté en 0.14.1, incompatible avec certaines écritures de fichiers du runtime MeshAgent.
+- Les textes Unicode sont transmis sous forme Base64 UTF-8 puis reconstruits par PowerShell : les accents restent corrects sans dépendre de l’encodage du fichier temporaire.
+- Les erreurs du dialogue sont maintenant écrites dans `C:\\Windows\\Temp\\maintctl-agent.log` et visibles dans les dernières décisions du plugin.
+
 ## 0.14.1
 
 - Le choix « Oui » du mode proposition ferme maintenant immédiatement la session distante, sans afficher un second dialogue de dix secondes sur l’ancien poste.

@@ -697,7 +697,7 @@ module.exports.maintctl = function (parent) {
         // réponse se perd, la nouvelle session est tout de même fermée.
         const fallbackDelay = multiLoginConfig.mode === 'block'
             ? 30 * 1000
-            : (multiLoginConfig.promptTimeoutSeconds + 20) * 1000;
+            : (multiLoginConfig.promptTimeoutSeconds + 45) * 1000;
         const fallbackTimer = setTimeout(() => {
             const pending = multiLoginRequests[dispatchId];
             if (!pending) return;
@@ -1091,7 +1091,8 @@ module.exports.maintctl = function (parent) {
                                 ? 'Cette nouvelle session va être fermée car les connexions multiples sont interdites.'
                                 : 'Cette session va être fermée ; la session déjà ouverte est conservée.',
                             command.dispatchId,
-                            'new'
+                            'new',
+                            { immediate: true, warningSeconds: 0 }
                         );
                     }
                     addMultiLoginEvent({
@@ -1100,7 +1101,9 @@ module.exports.maintctl = function (parent) {
                         nodeId: request.nodeId,
                         detail: command.localClosed
                             ? 'Nouvelle session refusée et fermée directement par l’agent'
-                            : (command.ok ? 'Nouvelle session refusée ; fermeture de secours demandée' : 'Fermeture directe impossible ; nouvelle tentative demandée'),
+                            : (command.ok
+                                ? 'Nouvelle session refusée ; fermeture de secours demandée'
+                                : 'Dialogue Windows impossible ; nouvelle session fermée par sécurité. Détail agent : ' + (String(command.error || '') + ' ' + String(command.logTail || '')).trim().slice(-500)),
                     });
                 }
                 return;

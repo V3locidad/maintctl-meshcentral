@@ -393,10 +393,7 @@ function runPowerShell(script, timeoutMs, onDone) {
     var bytes = 0;
     var note = '';
 
-    // Windows PowerShell 5 lit les fichiers .ps1 sans BOM avec la page de
-    // codes système. Le BOM UTF-8 préserve donc les accents français dans les
-    // titres et messages envoyés aux sessions Windows.
-    try { fs.writeFileSync(ps1, '\uFEFF' + script); }
+    try { fs.writeFileSync(ps1, script); }
     catch (e) { onDone(false, 0, '', 'write ps1 failed: ' + e); return; }
 
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -677,14 +674,63 @@ function duplicateLocalSessions(username) {
     return out;
 }
 
-function waitDuplicateSessions(username, attempts, callback, intervalMs) {
+function waitDuplicateSessions(username, attempts, callback, intervalMs, requireReady) {
     var sessions = duplicateLocalSessions(username);
-    if (sessions.length || attempts <= 0) return callback(sessions);
-    setTimeout(function () { waitDuplicateSessions(username, attempts - 1, callback, intervalMs); }, intervalMs || 500);
+    var ready = sessions.filter(function (session) {
+        return session.state === 'active' || session.state === 'connected';
+    });
+    if ((sessions.length && (!requireReady || ready.length)) || attempts <= 0) {
+        return callback(ready.length ? ready : sessions);
+    }
+    setTimeout(function () { waitDuplicateSessions(username, attempts - 1, callback, intervalMs, requireReady); }, intervalMs || 500);
 }
 
 function duplicatePsLiteral(value) {
     return "'" + String(value || '').replace(/[\r\n\u0000-\u001f]/g, ' ').replace(/'/g, "''") + "'";
+}
+
+function duplicateUtf8Base64(value) {
+    var input = String(value || '');
+    var bytes = [];
+    for (var i = 0; i < input.length; i++) {
+        var code = input.charCodeAt(i);
+        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < input.length) {
+            var low = input.charCodeAt(i + 1);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                i++;
+            }
+        }
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) {
+            bytes.push(0xC0 | (code >> 6), 0x80 | (code & 0x3F));
+        } else if (code < 0x10000) {
+            bytes.push(0xE0 | (code >> 12), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F));
+        } else {
+            bytes.push(0xF0 | (code >> 18), 0x80 | ((code >> 12) & 0x3F), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F));
+        }
+    }
+    var alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var out = '';
+    for (var p = 0; p < bytes.length; p += 3) {
+        var b1 = bytes[p];
+        var has2 = p + 1 < bytes.length;
+        var has3 = p + 2 < bytes.length;
+        var b2 = has2 ? bytes[p + 1] : 0;
+        var b3 = has3 ? bytes[p + 2] : 0;
+        out += alphabet.charAt(b1 >> 2);
+        out += alphabet.charAt(((b1 & 3) << 4) | (b2 >> 4));
+        out += has2 ? alphabet.charAt(((b2 & 15) << 2) | (b3 >> 6)) : '=';
+        out += has3 ? alphabet.charAt(b3 & 63) : '=';
+    }
+    return out;
+}
+
+function duplicatePsUtf8(value) {
+    // L'expression PowerShell reste 100 % ASCII. Les accents sont reconstruits
+    // au runtime et ne dépendent donc ni de la page de codes ni du BOM pris en
+    // charge par l'implémentation fs embarquée dans MeshAgent.
+    return '[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(' + duplicatePsLiteral(duplicateUtf8Base64(value)) + '))';
 }
 
 function duplicateWtsType(includeLogoff) {
@@ -708,8 +754,8 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
     return ''
         + '$ErrorActionPreference = "Stop";'
         + duplicateWtsType(true)
-        + '$title = ' + duplicatePsLiteral(title) + ';'
-        + '$message = ' + duplicatePsLiteral(message) + ';'
+        + '$title = ' + duplicatePsUtf8(title) + ';'
+        + '$message = ' + duplicatePsUtf8(message) + ';'
         + '$response = 0;'
         + '$ok = [MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),' + style + ',' + parseInt(timeoutSeconds, 10) + ',[ref]$response,$true);'
         + '$closed = 0;'
@@ -733,11 +779,15 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 }
 
 function doDuplicateSessionGuard(args) {
+    dbg('duplicateSessionGuard: mode=' + String(args && args.mode) + ', user=' + String(args && args.username) + ', dispatchId=' + String(args && args.dispatchId));
     if (process.platform !== 'win32') {
         reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', decision: 'deny' });
         return;
     }
-    waitDuplicateSessions(args.username, 10, function (sessions) {
+    // L'événement 4624 arrive avant que le bureau WTS soit toujours prêt à
+    // recevoir WTSSendMessage. Attendre l'état Active/Connected évite que le
+    // dialogue soit envoyé trop tôt et disparaisse sans jamais être affiché.
+    waitDuplicateSessions(args.username, 80, function (sessions) {
         if (!sessions.length) {
             reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', decision: 'deny' });
             return;
@@ -753,6 +803,7 @@ function doDuplicateSessionGuard(args) {
             : 5;
         var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
         runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
+            dbg('duplicateSessionGuard result: ok=' + ok + ', response=' + response + ', note=' + note + ', log=' + String(log || '').slice(-2000));
             var accepted = promptMode && response === 6; // IDYES
             var closedMatch = String(note || '').match(/closed=(\d+)/);
             var closed = closedMatch ? parseInt(closedMatch[1], 10) || 0 : 0;
@@ -780,7 +831,7 @@ function doDuplicateSessionGuard(args) {
                 logTail: (log || '').slice(-1500),
             });
         });
-    });
+    }, 250, true);
 }
 
 function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) {
@@ -788,8 +839,8 @@ function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) 
     return ''
         + '$ErrorActionPreference = "Stop";'
         + duplicateWtsType(true)
-        + '$title = ' + duplicatePsLiteral(title) + ';'
-        + '$message = ' + duplicatePsLiteral(message) + ';'
+        + '$title = ' + duplicatePsUtf8(title) + ';'
+        + '$message = ' + duplicatePsUtf8(message) + ';'
         + '$closed = 0;'
         + '$ids = @(' + ids.join(',') + ');'
         + 'foreach ($id in $ids) {'
