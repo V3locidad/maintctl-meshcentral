@@ -789,6 +789,58 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
         + 'Write-Host $resultLine;';
 }
 
+function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
+    var done = false;
+    var safetyTimer = null;
+
+    function finish(ok, response, note) {
+        if (done) return;
+        done = true;
+        if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
+        onDone(ok, response || 0, note || '');
+    }
+
+    try {
+        // Le module natif de MeshAgent crée la fenêtre dans la session Windows
+        // désignée (child-container avec uid=sessionId). Contrairement à un
+        // PowerShell lancé par le service, la boîte appartient donc réellement
+        // au bureau interactif de l'utilisateur.
+        var dialog = require('message-box').create(
+            title,
+            message,
+            timeoutSeconds,
+            yesNo ? null : 1,
+            parseInt(sessionId, 10)
+        );
+        if (!dialog || typeof dialog.then !== 'function') {
+            throw new Error('message-box.create n\'a pas retourné de promesse');
+        }
+
+        dialog.then(function () {
+            // message-box résout la promesse pour Oui (IDYES=6) ou OK (IDOK=1).
+            finish(true, yesNo ? 6 : 1, 'dialogue MeshAgent affiché');
+        }, function (reason) {
+            var response = parseInt(reason, 10);
+            // Pour une boîte Oui/Non, le module rejette volontairement avec
+            // IDNO=7. Ce n'est pas une erreur d'affichage mais le choix Non.
+            if (yesNo && response === 7) {
+                finish(true, 7, 'dialogue MeshAgent affiché');
+                return;
+            }
+            finish(false, 0, 'dialogue MeshAgent: ' + String(reason || 'échec inconnu'));
+        });
+
+        // Le délai interne commence lorsque le child-container est prêt. Ce
+        // filet couvre aussi un enfant qui ne parviendrait jamais à cet état.
+        safetyTimer = setTimeout(function () {
+            try { if (dialog && typeof dialog.close === 'function') dialog.close(); } catch (_) {}
+            finish(false, 0, 'dialogue MeshAgent: délai dépassé');
+        }, (timeoutSeconds + 15) * 1000);
+    } catch (e) {
+        finish(false, 0, 'dialogue MeshAgent: ' + e);
+    }
+}
+
 function doDuplicateSessionGuard(args) {
     dbg('duplicateSessionGuard: mode=' + String(args && args.mode) + ', user=' + String(args && args.username) + ', dispatchId=' + String(args && args.dispatchId));
     if (process.platform !== 'win32') {
@@ -812,15 +864,10 @@ function doDuplicateSessionGuard(args) {
         var timeout = promptMode
             ? Math.max(15, Math.min(120, parseInt(args.promptTimeoutSeconds, 10) || 45))
             : 5;
-        var resultFile = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp')
-            + '\\maintctl_guard_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
-        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion d\u00e9j\u00e0 ouverte', message, promptMode, timeout, resultFile);
-        runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
-            dbg('duplicateSessionGuard result: ok=' + ok + ', response=' + response + ', note=' + note + ', log=' + String(log || '').slice(-2000));
-            var promptSucceeded = !!(ok && String(note || '').indexOf('prompt=ok') >= 0);
+        runDuplicateSessionDialog(sessions[0].id, 'Connexion d\u00e9j\u00e0 ouverte', message, promptMode, timeout, function (ok, response, note) {
+            dbg('duplicateSessionGuard result: ok=' + ok + ', response=' + response + ', note=' + note);
+            var promptSucceeded = !!ok;
             var accepted = promptMode && promptSucceeded && response === 6; // IDYES
-            var closedMatch = String(note || '').match(/closed=(\d+)/);
-            var closed = closedMatch ? parseInt(closedMatch[1], 10) || 0 : 0;
             if (accepted) {
                 reply({
                     pluginaction: 'duplicateSessionGuardResult',
@@ -829,7 +876,7 @@ function doDuplicateSessionGuard(args) {
                     decision: 'replace',
                     response: response || 0,
                     localClosed: false,
-                    logTail: (log || '').slice(-1000),
+                    logTail: note || '',
                 });
                 return;
             }
@@ -839,12 +886,12 @@ function doDuplicateSessionGuard(args) {
                 ok: promptSucceeded,
                 decision: 'deny',
                 response: response || 0,
-                localClosed: closed > 0,
-                closed: closed,
+                localClosed: false,
+                closed: 0,
                 error: promptSucceeded ? null : (note || 'dialogue Windows impossible'),
-                logTail: (log || '').slice(-1500),
+                logTail: note || '',
             });
-        }, resultFile);
+        });
     }, 250, true);
 }
 

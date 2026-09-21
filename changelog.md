@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.5
+
+- La boîte Oui/Non est maintenant créée par le module natif `message-box` de MeshAgent directement dans l’identifiant de session Windows concerné.
+- Le dialogue ne dépend plus d’un PowerShell exécuté par le service, qui pouvait rester invisible bien que le script ait été correctement généré.
+- Les réponses Oui et Non remontent directement depuis le processus interactif MeshAgent ; les accents utilisent l’API Unicode Windows sans conversion intermédiaire.
+- Un délai de sécurité ferme la nouvelle session si le processus interactif ne peut pas créer ou retourner le dialogue.
+
 ## 0.14.4
 
 - Un nouvel événement Windows `4624` déclenche désormais le contrôle même si l’inventaire `coreinfo` considère déjà l’utilisateur présent sur le poste.
