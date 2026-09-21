@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1
+
+- Le choix « Oui » du mode proposition ferme maintenant immédiatement la session distante, sans afficher un second dialogue de dix secondes sur l’ancien poste.
+- Si la fermeture distante échoue, la nouvelle session est fermée afin de ne jamais laisser deux sessions actives malgré la règle.
+- Le résultat `IDYES` du dialogue est relu dans toute la sortie PowerShell pour rester fiable même lorsque stdout est fragmenté.
+- Les scripts PowerShell temporaires sont écrits en UTF-8 avec BOM : les accents français sont désormais affichés correctement.
+- Le texte du dialogue a été reformulé et l’interface indique explicitement lequel des deux modes est réellement enregistré.
+
 ## 0.14.0
 
 - Ajout d’une surveillance temps réel du journal de sécurité Windows sur chaque MeshAgent.

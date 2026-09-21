@@ -604,7 +604,9 @@ module.exports.maintctl = function (parent) {
         const dispatchId = 'ml-logoff-' + crypto.randomBytes(10).toString('hex');
         multiLoginLogoffs[dispatchId] = {
             nodeId: nodeId, username: username, requestId: requestId,
-            targetKind: targetKind, expires: Date.now() + 2 * 60 * 1000,
+            targetKind: targetKind,
+            replacementNodeId: options.replacementNodeId || '',
+            expires: Date.now() + 2 * 60 * 1000,
         };
         const sent = sendMultiLoginAgent(nodeId, {
             pluginaction: 'duplicateSessionLogoff',
@@ -1065,7 +1067,12 @@ module.exports.maintctl = function (parent) {
                             request.username,
                             'Votre session va être fermée : ce compte continue sur ' + destination.mesh + ' — ' + destination.name + '.',
                             command.dispatchId,
-                            'remote'
+                            'remote',
+                            {
+                                immediate: true,
+                                warningSeconds: 0,
+                                replacementNodeId: request.nodeId,
+                            }
                         );
                     });
                     addMultiLoginEvent({
@@ -1103,14 +1110,31 @@ module.exports.maintctl = function (parent) {
                 const request = multiLoginLogoffs[command.dispatchId];
                 if (!request) return;
                 delete multiLoginLogoffs[command.dispatchId];
+                const target = multiLoginNodeInfo(request.nodeId);
                 addMultiLoginEvent({
                     kind: command.ok ? 'logoff' : 'error',
                     username: request.username,
                     nodeId: request.nodeId,
                     detail: command.ok
-                        ? String(command.closed || 1) + ' session(s) Windows fermée(s)'
-                        : 'Échec de fermeture : ' + (command.error || 'session introuvable'),
+                        ? (request.targetKind === 'remote'
+                            ? 'Session distante fermée sur ' + target.mesh + ' — ' + target.name
+                            : String(command.closed || 1) + ' session(s) Windows fermée(s)')
+                        : (request.targetKind === 'remote'
+                            ? 'Échec de fermeture de la session distante sur ' + target.mesh + ' — ' + target.name + ' : ' + (command.error || 'session introuvable')
+                            : 'Échec de fermeture : ' + (command.error || 'session introuvable')),
                 });
+                // Si le remplacement demandé n'a pas réussi à fermer l'ancien
+                // poste, on rétablit la règle en fermant la nouvelle session.
+                if (!command.ok && request.targetKind === 'remote' && request.replacementNodeId) {
+                    requestMultiLoginLogoff(
+                        request.replacementNodeId,
+                        request.username,
+                        'La session distante n’a pas pu être fermée. Cette nouvelle session est annulée pour éviter une connexion multiple.',
+                        command.dispatchId,
+                        'new',
+                        { immediate: true, warningSeconds: 0 }
+                    );
+                }
                 return;
             }
 

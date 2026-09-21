@@ -3100,7 +3100,9 @@ refreshAgents().then(function () {
     }
     updateMultiLoginInputs();
     document.getElementById('multiLoginState').textContent = settings.enabled
-      ? 'Connexions multiples bloquées'
+      ? (settings.mode === 'prompt'
+          ? 'Mode actif : proposer de fermer la session distante'
+          : 'Mode actif : fermer immédiatement la nouvelle session')
       : 'Connexions multiples autorisées';
     var watcher = data.watcher || {};
     var watcherState = document.getElementById('multiLoginWatcherState');

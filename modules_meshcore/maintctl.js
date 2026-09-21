@@ -393,7 +393,10 @@ function runPowerShell(script, timeoutMs, onDone) {
     var bytes = 0;
     var note = '';
 
-    try { fs.writeFileSync(ps1, script); }
+    // Windows PowerShell 5 lit les fichiers .ps1 sans BOM avec la page de
+    // codes système. Le BOM UTF-8 préserve donc les accents français dans les
+    // titres et messages envoyés aux sessions Windows.
+    try { fs.writeFileSync(ps1, '\uFEFF' + script); }
     catch (e) { onDone(false, 0, '', 'write ps1 failed: ' + e); return; }
 
     var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -423,6 +426,15 @@ function runPowerShell(script, timeoutMs, onDone) {
     function finish(ok, err) {
         if (done) return;
         done = true;
+        // Une ligne stdout peut être coupée entre deux événements 'data'.
+        // Refaire le parsing sur le journal complet évite de perdre IDYES (6)
+        // et de traiter par erreur le choix « Oui » comme un refus.
+        var resultRe = /(?:^|\r?\n)RESULT:(\d+):([^\r\n]*)/g;
+        var resultMatch;
+        while ((resultMatch = resultRe.exec(log)) !== null) {
+            bytes = parseInt(resultMatch[1], 10) || 0;
+            note = resultMatch[2] || '';
+        }
         try { fs.unlinkSync(ps1); } catch (_) {}
         onDone(ok, bytes, log, note || (err || ''));
     }
@@ -734,12 +746,12 @@ function doDuplicateSessionGuard(args) {
         var where = locations.length ? locations.join(' ; ') : 'un autre poste';
         var promptMode = args.mode === 'prompt';
         var message = promptMode
-            ? 'Le compte ' + args.username + ' est deja ouvert sur : ' + where + '. Voulez-vous fermer la ou les sessions distantes et continuer sur ce poste ? Oui = fermer a distance. Non = fermer cette nouvelle session.'
-            : 'Connexion multiple interdite. Le compte ' + args.username + ' est deja ouvert sur : ' + where + '. Cette nouvelle session va se fermer automatiquement.';
+            ? 'Le compte ' + args.username + ' est déjà connecté sur :\r\n\r\n' + where + '\r\n\r\nSouhaitez-vous fermer la session distante et continuer sur ce poste ?\r\n\r\nOui : fermer la session distante\r\nNon : annuler cette nouvelle connexion'
+            : 'Connexion refusée.\r\n\r\nLe compte ' + args.username + ' est déjà connecté sur :\r\n\r\n' + where + '\r\n\r\nCette nouvelle session va être fermée.';
         var timeout = promptMode
             ? Math.max(15, Math.min(120, parseInt(args.promptTimeoutSeconds, 10) || 45))
             : 5;
-        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion deja ouverte', message, promptMode, timeout);
+        var script = buildDuplicateGuardScript(sessions[0].id, 'Connexion déjà ouverte', message, promptMode, timeout);
         runPowerShell(script, (timeout + 20) * 1000, function (ok, response, log, note) {
             var accepted = promptMode && response === 6; // IDYES
             var closedMatch = String(note || '').match(/closed=(\d+)/);
