@@ -610,18 +610,39 @@ function duplicateAllLocalUsers() {
             if (!session || session.SessionId == null || !session.Username) continue;
             var account = (session.Domain ? session.Domain + '\\' : '') + session.Username;
             var userKey = duplicateUserKey(account);
-            if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[userKey]) continue;
-            seen[userKey] = true;
-            out.push(account);
+            var sessionId = String(session.SessionId);
+            var sessionKey = userKey + '@' + sessionId;
+            if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[sessionKey]) continue;
+            seen[sessionKey] = true;
+            // Le nom seul ne permet pas de distinguer une session qui vient
+            // d'être rouverte de celle qui vient d'être fermée. L'identifiant
+            // WTS change à chaque nouvelle ouverture de session Windows et
+            // permet au serveur de ne plus rater les reconnexions rapides.
+            out.push({
+                Username: String(session.Username),
+                Domain: String(session.Domain || ''),
+                SessionId: sessionId,
+                State: String(session.State || ''),
+            });
         }
     } catch (e) { dbg('duplicateAllLocalUsers: ' + e); }
     return out;
 }
 
+function duplicateSnapshotEntrySignature(value) {
+    var account = value;
+    var sessionId = '';
+    if (value && typeof value === 'object') {
+        account = (value.Domain ? value.Domain + '\\' : '') + (value.Username || value.UserName || value.username || '');
+        if (value.SessionId != null) sessionId = String(value.SessionId);
+    }
+    return duplicateUserKey(account) + '@' + sessionId;
+}
+
 function sendDuplicateSessionSnapshot(delay) {
     setTimeout(function () {
         var users = duplicateAllLocalUsers();
-        duplicateSnapshotSignature = users.map(duplicateUserKey).sort().join('|');
+        duplicateSnapshotSignature = users.map(duplicateSnapshotEntrySignature).sort().join('|');
         reply({
             pluginaction: 'duplicateSessionSnapshot',
             users: users,
@@ -635,7 +656,7 @@ function startDuplicateSessionSnapshotMonitor() {
     sendDuplicateSessionSnapshot(0);
     duplicateSnapshotTimer = setInterval(function () {
         var users = duplicateAllLocalUsers();
-        var signature = users.map(duplicateUserKey).sort().join('|');
+        var signature = users.map(duplicateSnapshotEntrySignature).sort().join('|');
         if (signature === duplicateSnapshotSignature) return;
         duplicateSnapshotSignature = signature;
         reply({

@@ -439,7 +439,7 @@ module.exports.maintctl = function (parent) {
     const multiLoginEvents = [];
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
-    const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
+    const multiLoginRecentEnforcements = {}; // nodeId/user/session -> date, anti double coreinfo+4624
     let multiLoginSnapshotPollTimer = null;
 
     function multiLoginDisplay(value) {
@@ -466,8 +466,20 @@ module.exports.maintctl = function (parent) {
         (Array.isArray(values) ? values : []).forEach((value) => {
             const display = multiLoginDisplay(value);
             const key = multiLoginUserKey(display);
-            if (!key || key.endsWith('$') || out.some((entry) => entry.key === key)) return;
-            out.push({ key: key, display: display });
+            if (!key || key.endsWith('$')) return;
+            let entry = out.find((candidate) => candidate.key === key);
+            if (!entry) {
+                entry = { key: key, display: display, sessionIds: [] };
+                out.push(entry);
+            }
+            if (value && typeof value === 'object' && value.SessionId != null) {
+                const sessionId = String(value.SessionId).replace(/[^0-9A-Za-z_.:-]/g, '').substring(0, 64);
+                if (sessionId && entry.sessionIds.indexOf(sessionId) < 0) entry.sessionIds.push(sessionId);
+            }
+        });
+        out.forEach((entry) => {
+            entry.sessionIds.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+            entry.sessionSignature = entry.sessionIds.join(',');
         });
         return out;
     }
@@ -573,8 +585,8 @@ module.exports.maintctl = function (parent) {
         // MeshCentral ne doivent jamais être interprétés comme la photo WTS
         // précédente, sinon le premier agent qui répond après un redémarrage
         // peut être choisi arbitrairement comme « nouveau poste ».
-        const previousKeys = previous && previous.wtsPrimed
-            ? (previous.wtsUsers || []).map((entry) => entry.key)
+        const previousUsers = previous && previous.wtsPrimed
+            ? (previous.wtsUsers || [])
             : null;
         multiLoginNodes[nodeId] = {
             meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
@@ -587,9 +599,22 @@ module.exports.maintctl = function (parent) {
         // Le snapshot WTS est le secours des agents dont la surveillance du
         // journal Security n'a pas démarré ou a raté le 4624. Un compte qui
         // vient d'apparaître doit donc déclencher la même règle que coreinfo.
-        return previousKeys
-            ? users.filter((entry) => previousKeys.indexOf(entry.key) < 0)
-            : [];
+        if (!previousUsers) return [];
+        return users.reduce((added, entry) => {
+            const oldEntry = previousUsers.find((candidate) => candidate.key === entry.key);
+            if (!oldEntry) {
+                added.push(Object.assign({}, entry, { newSessionIds: entry.sessionIds.slice() }));
+                return added;
+            }
+            // Un même compte peut disparaître puis revenir entre deux relevés.
+            // L'ID WTS révèle alors qu'il s'agit bien d'une nouvelle ouverture,
+            // même si le nom d'utilisateur n'a jamais changé côté serveur.
+            if (entry.sessionIds.length && oldEntry.sessionIds && oldEntry.sessionIds.length) {
+                const newSessionIds = entry.sessionIds.filter((id) => oldEntry.sessionIds.indexOf(id) < 0);
+                if (newSessionIds.length) added.push(Object.assign({}, entry, { newSessionIds: newSessionIds }));
+            }
+            return added;
+        }, []);
     }
 
     function handleMultiLoginSecurityEvent(nodeId, command, agent) {
@@ -690,7 +715,10 @@ module.exports.maintctl = function (parent) {
         if (!multiLoginConfig.enabled || !user || multiLoginExcluded(user.key)) return;
         const remoteNodeIds = multiLoginRemoteSessions(nodeId, user.key);
         if (!remoteNodeIds.length) return;
-        const enforcementKey = nodeId + '/' + user.key;
+        const sessionIdentity = String(options.sessionSignature || options.logonId || '');
+        // La temporisation doit éliminer deux notifications relatives à la
+        // même ouverture, pas une reconnexion réelle quelques secondes après.
+        const enforcementKey = nodeId + '/' + user.key + (sessionIdentity ? '/' + sessionIdentity : '');
         const now = Date.now();
         if (options.force) {
             Object.keys(multiLoginRequests).forEach((id) => {
@@ -953,7 +981,10 @@ module.exports.maintctl = function (parent) {
             if (command.pluginaction === 'duplicateSessionSnapshot') {
                 if (sourceNodeId && Array.isArray(command.users)) {
                     const addedUsers = updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
-                    addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, { source: 'snapshot' }));
+                    addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, {
+                        source: 'snapshot',
+                        sessionSignature: (entry.newSessionIds || entry.sessionIds || []).join(','),
+                    }));
                 }
                 return;
             }

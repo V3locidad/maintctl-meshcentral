@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.18
+
+- Les relevés WTS transmettent maintenant l’identifiant de chaque session Windows, et plus seulement le nom du compte.
+- Une reconnexion rapide du même utilisateur est détectée même si le serveur n’a pas eu le temps de voir l’intervalle sans session.
+- L’anti-doublon de dix secondes est désormais propre à la session Windows : il ne masque plus une véritable nouvelle connexion.
+
 ## 0.14.17
 
 - Rétablissement du composant `message-box` de la version 0.14.6, dont l'affichage est fonctionnel sur les postes concernés.
