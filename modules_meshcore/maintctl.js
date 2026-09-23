@@ -131,6 +131,7 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'examStatus':     doExamStatus(args); return 'examStatus started';
             case 'duplicateSessionWatchStart': startDuplicateSessionWatcher(args); return 'duplicateSessionWatchStart started';
             case 'duplicateSessionWatchStop':  stopDuplicateSessionWatcher(args, true); return 'duplicateSessionWatchStop done';
+            case 'duplicateSessionSnapshotRequest': sendDuplicateSessionSnapshot(0); return 'duplicateSessionSnapshot requested';
             case 'duplicateSessionGuard':  doDuplicateSessionGuard(args); return 'duplicateSessionGuard started';
             case 'duplicateSessionLogoff': doDuplicateSessionLogoff(args); return 'duplicateSessionLogoff started';
             default:

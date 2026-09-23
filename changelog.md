@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.12
+
+- MeshCentral interroge maintenant explicitement tous les agents toutes les deux secondes pour obtenir leurs sessions WTS. La détection ne dépend plus du déclenchement d'un timer local dans MeshAgent.
+- La première réponse de chaque poste reste un amorçage silencieux ; les réponses suivantes permettent d'identifier précisément le poste où le compte vient d'apparaître.
+
 ## 0.14.11
 
 - La première remontée d'un agent est de nouveau un amorçage silencieux : elle ne peut plus afficher la demande sur un ancien poste choisi au hasard.

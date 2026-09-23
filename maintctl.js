@@ -440,6 +440,7 @@ module.exports.maintctl = function (parent) {
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
     const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
+    let multiLoginSnapshotPollTimer = null;
 
     function multiLoginDisplay(value) {
         let raw = value;
@@ -536,6 +537,32 @@ module.exports.maintctl = function (parent) {
     function broadcastMultiLoginWatcher(enabled) {
         const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
         Object.keys(agents).forEach((nodeId) => setMultiLoginWatcher(nodeId, enabled));
+    }
+
+    function pollMultiLoginSnapshots() {
+        if (!multiLoginConfig.enabled) return;
+        const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        Object.keys(agents).forEach((nodeId) => {
+            sendMultiLoginAgent(nodeId, {
+                pluginaction: 'duplicateSessionSnapshotRequest',
+                dispatchId: 'ml-snapshot-' + crypto.randomBytes(6).toString('hex'),
+            });
+        });
+    }
+
+    function startMultiLoginSnapshotPolling() {
+        const server = obj.meshServer;
+        if (server && server.__maintctlMultiLoginSnapshotPollTimer) {
+            try { clearInterval(server.__maintctlMultiLoginSnapshotPollTimer); } catch (_) {}
+            server.__maintctlMultiLoginSnapshotPollTimer = null;
+        }
+        if (multiLoginSnapshotPollTimer) {
+            try { clearInterval(multiLoginSnapshotPollTimer); } catch (_) {}
+        }
+        multiLoginSnapshotPollTimer = setInterval(pollMultiLoginSnapshots, 2000);
+        if (multiLoginSnapshotPollTimer && typeof multiLoginSnapshotPollTimer.unref === 'function') multiLoginSnapshotPollTimer.unref();
+        if (server) server.__maintctlMultiLoginSnapshotPollTimer = multiLoginSnapshotPollTimer;
+        pollMultiLoginSnapshots();
     }
 
     function updateMultiLoginSnapshot(nodeId, values, agent) {
@@ -1343,6 +1370,13 @@ module.exports.maintctl = function (parent) {
             } else if (event.action === 'stopped') {
                 Object.keys(multiLoginNodes).forEach((nodeId) => delete multiLoginNodes[nodeId]);
                 Object.keys(multiLoginWatchers).forEach((nodeId) => delete multiLoginWatchers[nodeId]);
+                if (multiLoginSnapshotPollTimer) {
+                    try { clearInterval(multiLoginSnapshotPollTimer); } catch (_) {}
+                    if (obj.meshServer && obj.meshServer.__maintctlMultiLoginSnapshotPollTimer === multiLoginSnapshotPollTimer) {
+                        obj.meshServer.__maintctlMultiLoginSnapshotPollTimer = null;
+                    }
+                    multiLoginSnapshotPollTimer = null;
+                }
             }
         } catch (_) {}
     };
@@ -1359,6 +1393,7 @@ module.exports.maintctl = function (parent) {
             if (obj.meshServer) obj.meshServer.__maintctlMultiLoginListener = obj;
             refreshMultiLoginInventory(function () {
                 if (multiLoginConfig.enabled) broadcastMultiLoginWatcher(true);
+                startMultiLoginSnapshotPolling();
             });
         } catch (e) {
             console.log('maintctl: initialisation connexions multiples: ' + e.message);
@@ -1525,6 +1560,7 @@ module.exports.maintctl = function (parent) {
                     });
                 }
                 broadcastMultiLoginWatcher(next.enabled);
+                if (next.enabled) pollMultiLoginSnapshots();
                 addMultiLoginEvent({
                     kind: 'settings',
                     username: (user && (user.name || user._id)) || 'administrateur',
