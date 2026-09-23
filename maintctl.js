@@ -1097,6 +1097,11 @@ module.exports.maintctl = function (parent) {
                         detail: 'L’utilisateur a choisi de fermer la ou les sessions distantes',
                     });
                 } else {
+                    const agentDetails = [command.error, command.logTail]
+                        .map((value) => String(value || '').trim())
+                        .filter((value, index, values) => value && values.indexOf(value) === index)
+                        .join(' ')
+                        .slice(-500);
                     // Depuis 0.13.1 l'agent ferme directement la nouvelle
                     // session après le dialogue. Le second dispatch reste un
                     // secours compatible avec les agents 0.13.0.
@@ -1120,7 +1125,7 @@ module.exports.maintctl = function (parent) {
                             ? 'Nouvelle session refusée et fermée directement par l’agent'
                             : (command.ok
                                 ? 'Nouvelle session refusée ; fermeture de secours demandée'
-                                : 'Dialogue Windows impossible ; nouvelle session fermée par sécurité. Détail agent : ' + (String(command.error || '') + ' ' + String(command.logTail || '')).trim().slice(-500)),
+                                : 'Dialogue Windows impossible ; nouvelle session fermée par sécurité. Détail agent : ' + agentDetails),
                     });
                 }
                 return;

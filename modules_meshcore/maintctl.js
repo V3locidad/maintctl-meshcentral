@@ -846,48 +846,69 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
     var done = false;
     var safetyTimer = null;
+    var exitTimer = null;
+    var container = null;
 
     function finish(ok, response, note) {
         if (done) return;
         done = true;
         if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
+        if (exitTimer) { try { clearTimeout(exitTimer); } catch (_) {} }
+        if (container) { try { container.exit2(); } catch (_) {} }
+        container = null;
         onDone(ok, response || 0, note || '');
     }
 
     try {
-        // Le module natif de MeshAgent crée la fenêtre dans la session Windows
-        // désignée (child-container avec uid=sessionId). Contrairement à un
-        // PowerShell lancé par le service, la boîte appartient donc réellement
-        // au bureau interactif de l'utilisateur.
-        var dialog = require('message-box').create(
-            title,
-            message,
-            timeoutSeconds,
-            yesNo ? null : 1,
-            parseInt(sessionId, 10)
-        );
-        if (!dialog || typeof dialog.then !== 'function') {
-            throw new Error('message-box.create n\'a pas retourné de promesse');
-        }
+        // Le message-box intégré à certaines versions de MeshAgent envoie la
+        // réponse puis termine immédiatement son enfant. L'événement exit peut
+        // alors gagner la course et transformer un vrai clic en erreur
+        // « child exited with code: 0 ». Ce conteneur interactif garde le même
+        // procédé natif MessageBoxW, mais attend 1,5 s après l'envoi du choix.
+        var style = (yesNo ? 4 : 0) + 48 + 256 + 4096 + 65536 + 262144;
+        var title64 = duplicateUtf8Base64(title);
+        var message64 = duplicateUtf8Base64(message);
+        var childScript = ''
+            + 'var parent=require("ScriptContainer");'
+            + 'var GM=require("_GenericMarshal");'
+            + 'var user32=GM.CreateNativeProxy("user32.dll");'
+            + 'user32.CreateMethod("MessageBoxW");'
+            + 'var title=GM.CreateVariable(Buffer.from("' + title64 + '","base64").toString(),{wide:true});'
+            + 'var message=GM.CreateVariable(Buffer.from("' + message64 + '","base64").toString(),{wide:true});'
+            + 'var call=user32.MessageBoxW.async(0,message,title,' + style + ');'
+            + 'call.then(function(r){'
+            + 'var response=(r&&r.Val!=null)?r.Val:0;'
+            + 'parent.send("RESULT:"+response);'
+            + 'setTimeout(function(){process.exit();},1500);'
+            + '},function(e){'
+            + 'parent.send("ERROR:"+String(e||"MessageBoxW"));'
+            + 'setTimeout(function(){process.exit();},1500);'
+            + '});';
 
-        dialog.then(function () {
-            // message-box résout la promesse pour Oui (IDYES=6) ou OK (IDOK=1).
-            finish(true, yesNo ? 6 : 1, 'dialogue MeshAgent affiché');
-        }, function (reason) {
-            var response = parseInt(reason, 10);
-            // Pour une boîte Oui/Non, le module rejette volontairement avec
-            // IDNO=7. Ce n'est pas une erreur d'affichage mais le choix Non.
-            if (yesNo && response === 7) {
-                finish(true, 7, 'dialogue MeshAgent affiché');
+        container = require('ScriptContainer').Create({ sessionId: parseInt(sessionId, 10) });
+        container.on('data', function (data) {
+            var text = (data && typeof data.toString === 'function' ? data.toString() : String(data || '')).trim();
+            var match = text.match(/RESULT:(\d+)/);
+            if (match) {
+                var response = parseInt(match[1], 10) || 0;
+                var valid = yesNo ? (response === 6 || response === 7) : response === 1;
+                finish(valid, response, valid ? 'dialogue MeshAgent affiché' : 'réponse Windows inattendue: ' + response);
                 return;
             }
-            finish(false, 0, 'dialogue MeshAgent: ' + String(reason || 'échec inconnu'));
+            if (text.indexOf('ERROR:') === 0) finish(false, 0, 'dialogue MeshAgent: ' + text.substring(6));
         });
+        container.on('error', function (e) { finish(false, 0, 'dialogue MeshAgent: ' + e); });
+        container.on('exit', function (code) {
+            if (done) return;
+            // Laisser au canal de données un dernier instant pour livrer la
+            // réponse si exit et data ont été signalés dans le même tour.
+            exitTimer = setTimeout(function () {
+                finish(false, 0, 'dialogue MeshAgent: enfant arrêté sans réponse (code ' + code + ')');
+            }, 750);
+        });
+        container.ExecuteString(childScript);
 
-        // Le délai interne commence lorsque le child-container est prêt. Ce
-        // filet couvre aussi un enfant qui ne parviendrait jamais à cet état.
         safetyTimer = setTimeout(function () {
-            try { if (dialog && typeof dialog.close === 'function') dialog.close(); } catch (_) {}
             finish(false, 0, 'dialogue MeshAgent: délai dépassé');
         }, (timeoutSeconds + 15) * 1000);
     } catch (e) {

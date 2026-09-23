@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.7
+
+- Correction de la course `child exited with code: 0/undefined` du composant `message-box` de MeshAgent, qui pouvait perdre un clic Oui ou Non pourtant effectué.
+- Le dialogue est désormais exécuté dans un `ScriptContainer` rattaché à la session Windows et conserve son processus 1,5 seconde après l’envoi de la réponse.
+- Le serveur attend également brièvement une éventuelle réponse arrivée en même temps que la notification de fin du processus.
+- Les détails d’erreur identiques ne sont plus répétés deux fois dans « Dernières décisions ».
+
 ## 0.14.6
 
 - Nettoyage automatique et strictement ciblé des anciens fichiers temporaires `maintctl_*.ps1`, résultats JSON/TXT et archives ZIP abandonnés depuis plus d’une heure.
