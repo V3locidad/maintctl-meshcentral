@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.10
+
+- La surveillance du journal Security lit désormais les événements 4624/4634 directement dans le processus PowerShell principal. Le callback `Register-ObjectEvent`, qui pouvait garder les événements dans son job interne alors que le watcher était indiqué actif, n'est plus utilisé.
+- Réconciliation stricte des conflits : chaque remontée `coreinfo` ou WTS applique désormais la règle à tout compte également présent sur un autre poste, même si ce compte était déjà connu localement.
+- Une seule demande peut être active pour un même utilisateur sur l’ensemble des postes, ce qui évite deux boîtes de dialogue simultanées lors de remontées concurrentes.
+- Aucune nouvelle demande n’est envoyée pendant qu’une fermeture de session concernant ce compte est déjà en cours.
+- Le journal indique explicitement « Conflit confirmé par la remontée d’inventaire » lorsque ce filet de sécurité déclenche la demande automatique.
+
 ## 0.14.9
 
 - La première remontée `coreinfo` ou WTS d’un agent qui vient de se connecter est maintenant considérée comme une nouvelle arrivée et applique immédiatement la règle aux utilisateurs présents.

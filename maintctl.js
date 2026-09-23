@@ -671,16 +671,21 @@ module.exports.maintctl = function (parent) {
         if (options.force) {
             Object.keys(multiLoginRequests).forEach((id) => {
                 const pending = multiLoginRequests[id];
-                if (pending && pending.nodeId === nodeId && pending.userKey === user.key) delete multiLoginRequests[id];
+                if (pending && pending.userKey === user.key) delete multiLoginRequests[id];
             });
             delete multiLoginRecentEnforcements[enforcementKey];
         }
         if (!options.force && multiLoginRecentEnforcements[enforcementKey] && now - multiLoginRecentEnforcements[enforcementKey] < 10000) return;
         const alreadyPending = Object.keys(multiLoginRequests).some((id) => {
             const pending = multiLoginRequests[id];
-            return pending && pending.nodeId === nodeId && pending.userKey === user.key;
+            return pending && pending.userKey === user.key;
         });
         if (!options.force && alreadyPending) return;
+        const alreadyClosing = Object.keys(multiLoginLogoffs).some((id) => {
+            const pending = multiLoginLogoffs[id];
+            return pending && multiLoginUserKey(pending.username) === user.key;
+        });
+        if (!options.force && alreadyClosing) return;
         multiLoginRecentEnforcements[enforcementKey] = now;
         Object.keys(multiLoginRecentEnforcements).forEach((key) => {
             if (now - multiLoginRecentEnforcements[key] > 60000) delete multiLoginRecentEnforcements[key];
@@ -739,9 +744,11 @@ module.exports.maintctl = function (parent) {
             detail: sent
                 ? (options.source === 'snapshot'
                     ? 'Connexion multiple détectée par l’inventaire Windows (événement 4624 absent) sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                    : (options.source === 'inventory-reconcile'
+                        ? 'Conflit confirmé par la remontée d’inventaire ; demande envoyée automatiquement, autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
                     : (options.source === 'manual'
                         ? 'Demande de choix relancée manuellement ; autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
-                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')))
+                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', '))))
                 : 'Impossible de contacter le nouveau poste',
         });
         if (!sent) {
@@ -923,6 +930,16 @@ module.exports.maintctl = function (parent) {
                 if (sourceNodeId && Array.isArray(command.users)) {
                     const addedUsers = updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
                     addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, { source: 'snapshot' }));
+                    // Réconciliation stricte : même si l'ajout a été absorbé
+                    // par une remontée concurrente, tout conflit encore actif
+                    // doit produire une demande. Le verrou global userKey
+                    // empêche plusieurs boîtes simultanées.
+                    (multiLoginNodes[sourceNodeId].users || []).forEach((entry) => {
+                        enforceMultiLogin(sourceNodeId, entry, {
+                            source: 'inventory-reconcile',
+                            immediate: multiLoginConfig.mode === 'block',
+                        });
+                    });
                 }
                 return;
             }
@@ -1302,9 +1319,16 @@ module.exports.maintctl = function (parent) {
                 primed: true,
             };
             const oldKeys = multiLoginComparisonKeys(previous);
-            if (!oldKeys) return;
-            users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => {
-                enforceMultiLogin(nodeId, entry, { source: previous && previous.enforceFirstUsers ? 'first-coreinfo' : 'coreinfo' });
+            if (oldKeys) {
+                users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => {
+                    enforceMultiLogin(nodeId, entry, { source: previous && previous.enforceFirstUsers ? 'first-coreinfo' : 'coreinfo' });
+                });
+            }
+            users.forEach((entry) => {
+                enforceMultiLogin(nodeId, entry, {
+                    source: 'inventory-reconcile',
+                    immediate: multiLoginConfig.mode === 'block',
+                });
             });
         } catch (e) {
             console.log('maintctl: multi-login coreinfo error: ' + e.message);
