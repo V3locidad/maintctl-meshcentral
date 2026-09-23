@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.21
+
+- Après un redémarrage du plugin, les snapshots WTS ne sont plus dépendants de l’ordre aléatoire de réponse des postes : une réconciliation compare les `LogonTime` et cible toujours la session la plus récente.
+- Un conflit déjà présent au premier snapshot déclenche donc la règle au lieu d’être silencieusement amorcé.
+- Un résultat de fermeture perdu ne verrouille plus toutes les nouvelles connexions du même utilisateur pendant deux minutes ; le verrou opérationnel est limité à quinze secondes.
+
 ## 0.14.20
 
 - Le dialogue conserve désormais tous les gestionnaires IPC natifs de `message-box` ; seuls les faux rejets `child exited with code: undefined/0` sont filtrés sans retirer les listeners qui transmettent les clics.

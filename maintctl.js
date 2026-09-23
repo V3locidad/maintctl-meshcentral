@@ -18,7 +18,7 @@ const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
 const MULTI_LOGIN_EVENT_MAX = 100;
 const MULTI_LOGIN_SEEN_TTL_MS = 10 * 60 * 1000;
-const MAINTCTL_PLUGIN_VERSION = '0.14.20';
+const MAINTCTL_PLUGIN_VERSION = '0.14.21';
 const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
@@ -471,7 +471,7 @@ module.exports.maintctl = function (parent) {
             if (!key || key.endsWith('$')) return;
             let entry = out.find((candidate) => candidate.key === key);
             if (!entry) {
-                entry = { key: key, display: display, sessionIds: [], sessionTokens: [] };
+                entry = { key: key, display: display, sessionIds: [], sessionTokens: [], latestLogonTime: 0 };
                 out.push(entry);
             }
             if (value && typeof value === 'object' && value.SessionId != null) {
@@ -482,6 +482,7 @@ module.exports.maintctl = function (parent) {
                     const logonTime = Number.isFinite(rawLogonTime) && rawLogonTime > 0
                         ? String(Math.floor(rawLogonTime))
                         : '';
+                    if (logonTime) entry.latestLogonTime = Math.max(entry.latestLogonTime, Number(logonTime));
                     const token = sessionId + (logonTime ? '@' + logonTime : '');
                     if (entry.sessionTokens.indexOf(token) < 0) entry.sessionTokens.push(token);
                 }
@@ -713,6 +714,28 @@ module.exports.maintctl = function (parent) {
         });
     }
 
+    function reconcileMultiLoginUser(userKey) {
+        if (!multiLoginConfig.enabled || !userKey || multiLoginExcluded(userKey)) return;
+        const agents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+        const candidates = [];
+        Object.keys(multiLoginNodes).forEach((nodeId) => {
+            if (!agents[nodeId]) return;
+            const state = multiLoginNodes[nodeId];
+            const user = state && state.users && state.users.find((entry) => entry.key === userKey);
+            if (!user || !Number(user.latestLogonTime)) return;
+            candidates.push({ nodeId: nodeId, user: user, logonTime: Number(user.latestLogonTime) });
+        });
+        if (candidates.length < 2) return;
+        candidates.sort((a, b) => b.logonTime - a.logonTime);
+        // Sans ordre temporel certain, ne jamais choisir arbitrairement un
+        // poste à fermer. Avec LogonTime, le dernier poste est déterministe.
+        if (candidates[0].logonTime <= candidates[1].logonTime) return;
+        enforceMultiLogin(candidates[0].nodeId, candidates[0].user, {
+            source: 'reconcile',
+            sessionSignature: candidates[0].user.sessionSignature || String(candidates[0].logonTime),
+        });
+    }
+
     function requestMultiLoginLogoff(nodeId, username, message, requestId, targetKind, options) {
         options = options || {};
         const dispatchId = 'ml-logoff-' + crypto.randomBytes(10).toString('hex');
@@ -720,6 +743,7 @@ module.exports.maintctl = function (parent) {
             nodeId: nodeId, username: username, requestId: requestId,
             targetKind: targetKind,
             replacementNodeId: options.replacementNodeId || '',
+            createdAt: Date.now(),
             expires: Date.now() + 2 * 60 * 1000,
         };
         const sent = sendMultiLoginAgent(nodeId, {
@@ -763,12 +787,22 @@ module.exports.maintctl = function (parent) {
         if (!options.force && multiLoginRecentEnforcements[enforcementKey] && now - multiLoginRecentEnforcements[enforcementKey] < 10000) return;
         const alreadyPending = Object.keys(multiLoginRequests).some((id) => {
             const pending = multiLoginRequests[id];
-            return pending && pending.userKey === user.key;
+            if (!pending || pending.userKey !== user.key || pending.nodeId !== nodeId) return false;
+            // Un ancien dialogue perdu ne doit pas neutraliser une nouvelle
+            // session. Seule la même identité WTS (ou la course event/snapshot
+            // des cinq premières secondes) est considérée comme un doublon.
+            return pending.sessionIdentity === sessionIdentity
+                || now - Number(pending.createdAt || now) < 5000;
         });
         if (!options.force && alreadyPending) return;
         const alreadyClosing = Object.keys(multiLoginLogoffs).some((id) => {
             const pending = multiLoginLogoffs[id];
-            return pending && multiLoginUserKey(pending.username) === user.key;
+            // Un résultat de fermeture perdu ne doit pas bloquer toutes les
+            // connexions suivantes pendant deux minutes. Le verrou ne couvre
+            // que la courte durée normale de l'opération.
+            return pending && multiLoginUserKey(pending.username) === user.key
+                && (pending.nodeId === nodeId || pending.replacementNodeId === nodeId)
+                && now - Number(pending.createdAt || now) < 15000;
         });
         if (!options.force && alreadyClosing) return;
         multiLoginRecentEnforcements[enforcementKey] = now;
@@ -812,6 +846,8 @@ module.exports.maintctl = function (parent) {
             remoteNodeIds: remoteNodeIds,
             locations: locations,
             mode: multiLoginConfig.mode,
+            sessionIdentity: sessionIdentity,
+            createdAt: now,
             expires: Date.now() + (multiLoginConfig.promptTimeoutSeconds + 60) * 1000,
         };
         const sent = sendMultiLoginAgent(nodeId, {
@@ -829,9 +865,11 @@ module.exports.maintctl = function (parent) {
             detail: sent
                 ? (options.source === 'snapshot'
                     ? 'Connexion multiple détectée par l’inventaire Windows (événement 4624 absent) sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                    : (options.source === 'reconcile'
+                        ? 'Connexion multiple réconciliée par l’heure WTS ; ce poste est le plus récemment connecté. Autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
                     : (options.source === 'manual'
                         ? 'Demande de choix relancée manuellement ; autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
-                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')))
+                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', '))))
                 : 'Impossible de contacter le nouveau poste',
         });
         if (!sent) {
@@ -1028,6 +1066,12 @@ module.exports.maintctl = function (parent) {
                         source: 'snapshot',
                         sessionSignature: (entry.newSessionTokens || entry.sessionTokens || entry.sessionIds || []).join(','),
                     }));
+                    // Cette passe résout aussi les conflits présents lors du
+                    // premier snapshot après un redémarrage. L'ordre d'arrivée
+                    // des agents n'a plus d'importance : LogonTime désigne le
+                    // poste qui s'est réellement connecté en dernier.
+                    const state = multiLoginNodes[sourceNodeId];
+                    (state && state.users || []).forEach((entry) => reconcileMultiLoginUser(entry.key));
                 }
                 return;
             }

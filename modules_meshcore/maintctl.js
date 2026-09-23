@@ -11,7 +11,7 @@
 
 "use strict";
 
-var MAINTCTL_AGENT_VERSION = '0.14.20';
+var MAINTCTL_AGENT_VERSION = '0.14.21';
 var mesh = null;
 var duplicateWatcher = null;
 var duplicateWatcherEnabled = false;
