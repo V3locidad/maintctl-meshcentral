@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.11
+
+- La première remontée d'un agent est de nouveau un amorçage silencieux : elle ne peut plus afficher la demande sur un ancien poste choisi au hasard.
+- Un suivi WTS local compare désormais les sessions toutes les secondes. Seul le poste sur lequel un utilisateur vient réellement d'apparaître déclenche la demande, même si l'événement 4624 n'a pas été reçu.
+- Le choix « Oui » confirme maintenant que la session distante a réellement disparu avant d'annoncer une réussite. Le résultat de la commande de fermeture est transmis par un fichier temporaire fiable, puis supprimé.
+
 ## 0.14.10
 
 - La surveillance du journal Security lit désormais les événements 4624/4634 directement dans le processus PowerShell principal. Le callback `Register-ObjectEvent`, qui pouvait garder les événements dans son job interne alors que le watcher était indiqué actif, n'est plus utilisé.

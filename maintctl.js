@@ -431,7 +431,7 @@ module.exports.maintctl = function (parent) {
         console.log('maintctl: ' + e.message);
         multiLoginConfig = normalizeMultiLoginConfig(null);
     }
-    const multiLoginNodes = {};       // nodeId -> { meshid, users:[{ key, display }], updatedAt }
+    const multiLoginNodes = {};       // nodeId -> { meshid, users, wtsUsers, wtsPrimed, updatedAt }
     const multiLoginNodeLabels = {};  // nodeId -> { name, meshid }
     const multiLoginMeshLabels = {};  // meshId -> name
     const multiLoginRequests = {};    // dispatchId -> proposition en cours
@@ -440,7 +440,6 @@ module.exports.maintctl = function (parent) {
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
     const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
-    const multiLoginStartedAt = Date.now();
 
     function multiLoginDisplay(value) {
         let raw = value;
@@ -470,16 +469,6 @@ module.exports.maintctl = function (parent) {
             out.push({ key: key, display: display });
         });
         return out;
-    }
-
-    function multiLoginComparisonKeys(previous) {
-        if (previous && (previous.primed || previous.enforceFirstUsers)) {
-            return (previous.users || []).map((entry) => entry.key);
-        }
-        // Un nœud totalement inconnu après la phase d'amorçage correspond à
-        // une arrivée tardive ; contrôler sa première liste d'utilisateurs.
-        if (!previous && Date.now() - multiLoginStartedAt > 30000) return [];
-        return null;
     }
 
     function multiLoginExcluded(key) {
@@ -553,10 +542,18 @@ module.exports.maintctl = function (parent) {
         if (!nodeId) return [];
         const previous = multiLoginNodes[nodeId];
         const users = multiLoginUsers(values);
-        const previousKeys = multiLoginComparisonKeys(previous);
+        // L'inventaire WTS possède sa propre référence. coreinfo ou la base
+        // MeshCentral ne doivent jamais être interprétés comme la photo WTS
+        // précédente, sinon le premier agent qui répond après un redémarrage
+        // peut être choisi arbitrairement comme « nouveau poste ».
+        const previousKeys = previous && previous.wtsPrimed
+            ? (previous.wtsUsers || []).map((entry) => entry.key)
+            : null;
         multiLoginNodes[nodeId] = {
             meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
             users: users,
+            wtsUsers: users,
+            wtsPrimed: true,
             updatedAt: Date.now(),
             primed: true,
         };
@@ -744,11 +741,9 @@ module.exports.maintctl = function (parent) {
             detail: sent
                 ? (options.source === 'snapshot'
                     ? 'Connexion multiple détectée par l’inventaire Windows (événement 4624 absent) sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
-                    : (options.source === 'inventory-reconcile'
-                        ? 'Conflit confirmé par la remontée d’inventaire ; demande envoyée automatiquement, autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
                     : (options.source === 'manual'
                         ? 'Demande de choix relancée manuellement ; autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
-                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', '))))
+                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')))
                 : 'Impossible de contacter le nouveau poste',
         });
         if (!sent) {
@@ -801,6 +796,8 @@ module.exports.maintctl = function (parent) {
                         multiLoginNodes[node._id] = {
                             meshid: node.meshid || '',
                             users: multiLoginUsers(node.users),
+                            wtsUsers: [],
+                            wtsPrimed: false,
                             updatedAt: Date.now(),
                             primed: Array.isArray(node.users),
                         };
@@ -930,16 +927,6 @@ module.exports.maintctl = function (parent) {
                 if (sourceNodeId && Array.isArray(command.users)) {
                     const addedUsers = updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
                     addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, { source: 'snapshot' }));
-                    // Réconciliation stricte : même si l'ajout a été absorbé
-                    // par une remontée concurrente, tout conflit encore actif
-                    // doit produire une demande. Le verrou global userKey
-                    // empêche plusieurs boîtes simultanées.
-                    (multiLoginNodes[sourceNodeId].users || []).forEach((entry) => {
-                        enforceMultiLogin(sourceNodeId, entry, {
-                            source: 'inventory-reconcile',
-                            immediate: multiLoginConfig.mode === 'block',
-                        });
-                    });
                 }
                 return;
             }
@@ -1311,25 +1298,18 @@ module.exports.maintctl = function (parent) {
             const nodeId = agent && agent.dbNodeKey;
             if (!nodeId) return;
             const previous = multiLoginNodes[nodeId];
-            const users = multiLoginUsers(command.users);
+            const coreUsers = multiLoginUsers(command.users);
             multiLoginNodes[nodeId] = {
                 meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
-                users: users,
+                // Dès qu'une photo WTS existe, elle reste la source de vérité
+                // des sessions. Une remontée coreinfo plus ancienne ne doit
+                // pas réintroduire ou retirer un utilisateur entre deux polls.
+                users: previous && previous.wtsPrimed ? (previous.wtsUsers || []) : coreUsers,
+                wtsUsers: (previous && previous.wtsUsers) || [],
+                wtsPrimed: !!(previous && previous.wtsPrimed),
                 updatedAt: Date.now(),
                 primed: true,
             };
-            const oldKeys = multiLoginComparisonKeys(previous);
-            if (oldKeys) {
-                users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => {
-                    enforceMultiLogin(nodeId, entry, { source: previous && previous.enforceFirstUsers ? 'first-coreinfo' : 'coreinfo' });
-                });
-            }
-            users.forEach((entry) => {
-                enforceMultiLogin(nodeId, entry, {
-                    source: 'inventory-reconcile',
-                    immediate: multiLoginConfig.mode === 'block',
-                });
-            });
         } catch (e) {
             console.log('maintctl: multi-login coreinfo error: ' + e.message);
         }
@@ -1349,12 +1329,10 @@ module.exports.maintctl = function (parent) {
                     multiLoginNodes[event.nodeid] = {
                         meshid: event.meshid || '',
                         users: [],
+                        wtsUsers: [],
+                        wtsPrimed: false,
                         updatedAt: Date.now(),
                         primed: false,
-                        // Contrairement à l'amorçage silencieux du serveur, un
-                        // agent qui vient de se connecter doit faire contrôler
-                        // les utilisateurs présents dans sa première remontée.
-                        enforceFirstUsers: true,
                     };
                 }
                 if (!offline && multiLoginConfig.enabled) {
@@ -1537,6 +1515,14 @@ module.exports.maintctl = function (parent) {
                 multiLoginConfig = next;
                 if (!next.enabled) {
                     Object.keys(multiLoginRequests).forEach((id) => delete multiLoginRequests[id]);
+                } else {
+                    // La réactivation repart d'une photo WTS silencieuse sur
+                    // chaque poste. Les connexions déjà ouvertes ne sont pas
+                    // attribuées au hasard à un « dernier poste ».
+                    Object.keys(multiLoginNodes).forEach((nodeId) => {
+                        multiLoginNodes[nodeId].wtsUsers = [];
+                        multiLoginNodes[nodeId].wtsPrimed = false;
+                    });
                 }
                 broadcastMultiLoginWatcher(next.enabled);
                 addMultiLoginEvent({
