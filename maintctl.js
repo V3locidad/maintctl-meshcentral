@@ -469,17 +469,26 @@ module.exports.maintctl = function (parent) {
             if (!key || key.endsWith('$')) return;
             let entry = out.find((candidate) => candidate.key === key);
             if (!entry) {
-                entry = { key: key, display: display, sessionIds: [] };
+                entry = { key: key, display: display, sessionIds: [], sessionTokens: [] };
                 out.push(entry);
             }
             if (value && typeof value === 'object' && value.SessionId != null) {
                 const sessionId = String(value.SessionId).replace(/[^0-9A-Za-z_.:-]/g, '').substring(0, 64);
-                if (sessionId && entry.sessionIds.indexOf(sessionId) < 0) entry.sessionIds.push(sessionId);
+                if (sessionId) {
+                    if (entry.sessionIds.indexOf(sessionId) < 0) entry.sessionIds.push(sessionId);
+                    const rawLogonTime = Number(value.LogonTime != null ? value.LogonTime : value.logonTime);
+                    const logonTime = Number.isFinite(rawLogonTime) && rawLogonTime > 0
+                        ? String(Math.floor(rawLogonTime))
+                        : '';
+                    const token = sessionId + (logonTime ? '@' + logonTime : '');
+                    if (entry.sessionTokens.indexOf(token) < 0) entry.sessionTokens.push(token);
+                }
             }
         });
         out.forEach((entry) => {
             entry.sessionIds.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-            entry.sessionSignature = entry.sessionIds.join(',');
+            entry.sessionTokens.sort();
+            entry.sessionSignature = entry.sessionTokens.join(',');
         });
         return out;
     }
@@ -600,18 +609,40 @@ module.exports.maintctl = function (parent) {
         // journal Security n'a pas démarré ou a raté le 4624. Un compte qui
         // vient d'apparaître doit donc déclencher la même règle que coreinfo.
         if (!previousUsers) return [];
+        // Lorsqu'un compte a réellement disparu du relevé WTS, une prochaine
+        // apparition doit être contrôlée sans subir l'anti-doublon de la
+        // connexion précédente, même si Windows réutilise son SessionId.
+        previousUsers.forEach((oldEntry) => {
+            if (users.some((entry) => entry.key === oldEntry.key)) return;
+            const baseKey = nodeId + '/' + oldEntry.key;
+            Object.keys(multiLoginRecentEnforcements).forEach((key) => {
+                if (key === baseKey || key.indexOf(baseKey + '/') === 0) delete multiLoginRecentEnforcements[key];
+            });
+        });
         return users.reduce((added, entry) => {
             const oldEntry = previousUsers.find((candidate) => candidate.key === entry.key);
             if (!oldEntry) {
-                added.push(Object.assign({}, entry, { newSessionIds: entry.sessionIds.slice() }));
+                added.push(Object.assign({}, entry, { newSessionTokens: entry.sessionTokens.slice() }));
                 return added;
             }
             // Un même compte peut disparaître puis revenir entre deux relevés.
-            // L'ID WTS révèle alors qu'il s'agit bien d'une nouvelle ouverture,
-            // même si le nom d'utilisateur n'a jamais changé côté serveur.
-            if (entry.sessionIds.length && oldEntry.sessionIds && oldEntry.sessionIds.length) {
-                const newSessionIds = entry.sessionIds.filter((id) => oldEntry.sessionIds.indexOf(id) < 0);
-                if (newSessionIds.length) added.push(Object.assign({}, entry, { newSessionIds: newSessionIds }));
+            // Le couple ID WTS + LogonTime révèle alors qu'il s'agit bien d'une
+            // nouvelle ouverture, même si Windows a réutilisé le même ID.
+            if (entry.sessionTokens.length && oldEntry.sessionIds && oldEntry.sessionIds.length) {
+                const oldTokens = Array.isArray(oldEntry.sessionTokens) && oldEntry.sessionTokens.length
+                    ? oldEntry.sessionTokens
+                    : oldEntry.sessionIds;
+                const oldHasLogonTime = oldTokens.some((token) => String(token).indexOf('@') >= 0);
+                const newSessionTokens = entry.sessionTokens.filter((token) => {
+                    if (oldTokens.indexOf(token) >= 0) return false;
+                    // Première remontée après mise à niveau : enrichir l'ancien
+                    // SessionId avec LogonTime sans créer un faux conflit.
+                    if (!oldHasLogonTime && String(token).indexOf('@') >= 0) {
+                        return oldEntry.sessionIds.indexOf(String(token).split('@')[0]) < 0;
+                    }
+                    return true;
+                });
+                if (newSessionTokens.length) added.push(Object.assign({}, entry, { newSessionTokens: newSessionTokens }));
             }
             return added;
         }, []);
@@ -983,7 +1014,7 @@ module.exports.maintctl = function (parent) {
                     const addedUsers = updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
                     addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, {
                         source: 'snapshot',
-                        sessionSignature: (entry.newSessionIds || entry.sessionIds || []).join(','),
+                        sessionSignature: (entry.newSessionTokens || entry.sessionTokens || entry.sessionIds || []).join(','),
                     }));
                 }
                 return;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.19
+
+- Chaque session est maintenant identifiée par le couple `SessionId` et heure native d’ouverture WTS (`LogonTime`) : Windows peut réutiliser un numéro de session après une fermeture, mais pas son heure d’ouverture.
+- Dès qu’un compte disparaît du relevé WTS d’un poste, l’anti-doublon de sa connexion précédente est supprimé. Une reconnexion immédiate ne peut donc plus être ignorée pendant dix secondes.
+- La première remontée enrichie après mise à niveau est amorcée sans faux dialogue.
+
 ## 0.14.18
 
 - Les relevés WTS transmettent maintenant l’identifiant de chaque session Windows, et plus seulement le nom du compte.

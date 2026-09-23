@@ -604,6 +604,8 @@ function duplicateAllLocalUsers() {
     var out = [];
     var seen = {};
     try {
+        var userSessions = null;
+        try { userSessions = require('user-sessions'); } catch (_) {}
         var sessions = require('kvm-helper').users();
         for (var key in sessions) {
             var session = sessions[key];
@@ -611,7 +613,22 @@ function duplicateAllLocalUsers() {
             var account = (session.Domain ? session.Domain + '\\' : '') + session.Username;
             var userKey = duplicateUserKey(account);
             var sessionId = String(session.SessionId);
-            var sessionKey = userKey + '@' + sessionId;
+            var logonTime = 0;
+            try {
+                // WTSINFOW se termine par cinq FILETIME : ConnectTime,
+                // DisconnectTime, LastInputTime, LogonTime et CurrentTime.
+                // Une nouvelle authentification possède toujours un nouveau
+                // LogonTime, même lorsque Windows réutilise le SessionId.
+                var info = userSessions && userSessions.getRawSessionAttribute(session.SessionId, userSessions.InfoClass.WTSSessionInfo);
+                if (info && info.length >= 40) {
+                    var pos = info.length - 16;
+                    var low = info.readUInt32LE(pos);
+                    var high = info.readUInt32LE(pos + 4);
+                    var parsed = Math.floor((high * 4294967296 + low) / 10000 - 11644473600000);
+                    if (parsed > 0 && parsed < Date.now() + 86400000) logonTime = parsed;
+                }
+            } catch (_) {}
+            var sessionKey = userKey + '@' + sessionId + '@' + String(logonTime || '');
             if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[sessionKey]) continue;
             seen[sessionKey] = true;
             // Le nom seul ne permet pas de distinguer une session qui vient
@@ -622,6 +639,7 @@ function duplicateAllLocalUsers() {
                 Username: String(session.Username),
                 Domain: String(session.Domain || ''),
                 SessionId: sessionId,
+                LogonTime: logonTime,
                 State: String(session.State || ''),
             });
         }
@@ -632,11 +650,13 @@ function duplicateAllLocalUsers() {
 function duplicateSnapshotEntrySignature(value) {
     var account = value;
     var sessionId = '';
+    var logonTime = '';
     if (value && typeof value === 'object') {
         account = (value.Domain ? value.Domain + '\\' : '') + (value.Username || value.UserName || value.username || '');
         if (value.SessionId != null) sessionId = String(value.SessionId);
+        if (value.LogonTime != null && Number(value.LogonTime) > 0) logonTime = String(Math.floor(Number(value.LogonTime)));
     }
-    return duplicateUserKey(account) + '@' + sessionId;
+    return duplicateUserKey(account) + '@' + sessionId + '@' + logonTime;
 }
 
 function sendDuplicateSessionSnapshot(delay) {
