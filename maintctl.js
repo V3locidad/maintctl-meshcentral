@@ -521,6 +521,14 @@ module.exports.maintctl = function (parent) {
                 error: '',
                 updatedAt: Date.now(),
             };
+        } else if (enabled) {
+            multiLoginWatchers[nodeId] = {
+                running: false,
+                ok: false,
+                starting: false,
+                error: 'commande de surveillance non transmise',
+                updatedAt: Date.now(),
+            };
         }
         return sent;
     }
@@ -531,14 +539,24 @@ module.exports.maintctl = function (parent) {
     }
 
     function updateMultiLoginSnapshot(nodeId, values, agent) {
-        if (!nodeId) return;
+        if (!nodeId) return [];
         const previous = multiLoginNodes[nodeId];
+        const users = multiLoginUsers(values);
+        const previousKeys = previous && previous.primed
+            ? previous.users.map((entry) => entry.key)
+            : null;
         multiLoginNodes[nodeId] = {
             meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
-            users: multiLoginUsers(values),
+            users: users,
             updatedAt: Date.now(),
             primed: true,
         };
+        // Le snapshot WTS est le secours des agents dont la surveillance du
+        // journal Security n'a pas démarré ou a raté le 4624. Un compte qui
+        // vient d'apparaître doit donc déclencher la même règle que coreinfo.
+        return previousKeys
+            ? users.filter((entry) => previousKeys.indexOf(entry.key) < 0)
+            : [];
     }
 
     function handleMultiLoginSecurityEvent(nodeId, command, agent) {
@@ -641,12 +659,19 @@ module.exports.maintctl = function (parent) {
         if (!remoteNodeIds.length) return;
         const enforcementKey = nodeId + '/' + user.key;
         const now = Date.now();
-        if (multiLoginRecentEnforcements[enforcementKey] && now - multiLoginRecentEnforcements[enforcementKey] < 10000) return;
+        if (options.force) {
+            Object.keys(multiLoginRequests).forEach((id) => {
+                const pending = multiLoginRequests[id];
+                if (pending && pending.nodeId === nodeId && pending.userKey === user.key) delete multiLoginRequests[id];
+            });
+            delete multiLoginRecentEnforcements[enforcementKey];
+        }
+        if (!options.force && multiLoginRecentEnforcements[enforcementKey] && now - multiLoginRecentEnforcements[enforcementKey] < 10000) return;
         const alreadyPending = Object.keys(multiLoginRequests).some((id) => {
             const pending = multiLoginRequests[id];
             return pending && pending.nodeId === nodeId && pending.userKey === user.key;
         });
-        if (alreadyPending) return;
+        if (!options.force && alreadyPending) return;
         multiLoginRecentEnforcements[enforcementKey] = now;
         Object.keys(multiLoginRecentEnforcements).forEach((key) => {
             if (now - multiLoginRecentEnforcements[key] > 60000) delete multiLoginRecentEnforcements[key];
@@ -703,7 +728,11 @@ module.exports.maintctl = function (parent) {
             nodeId: nodeId, nodeName: here.name, mesh: here.mesh,
             remoteNodeIds: remoteNodeIds,
             detail: sent
-                ? 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                ? (options.source === 'snapshot'
+                    ? 'Connexion multiple détectée par l’inventaire Windows (événement 4624 absent) sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                    : (options.source === 'manual'
+                        ? 'Demande de choix relancée manuellement ; autre session sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')
+                        : 'Connexion multiple détectée sur ' + locations.map((location) => location.mesh + ' — ' + location.name).join(', ')))
                 : 'Impossible de contacter le nouveau poste',
         });
         if (!sent) {
@@ -883,7 +912,8 @@ module.exports.maintctl = function (parent) {
 
             if (command.pluginaction === 'duplicateSessionSnapshot') {
                 if (sourceNodeId && Array.isArray(command.users)) {
-                    updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
+                    const addedUsers = updateMultiLoginSnapshot(sourceNodeId, command.users, agent);
+                    addedUsers.forEach((entry) => enforceMultiLogin(sourceNodeId, entry, { source: 'snapshot' }));
                 }
                 return;
             }
@@ -1437,6 +1467,15 @@ module.exports.maintctl = function (parent) {
             Object.keys(multiLoginLogoffs).forEach((id) => {
                 if (multiLoginLogoffs[id].expires < now) delete multiLoginLogoffs[id];
             });
+            if (multiLoginConfig.enabled) {
+                const onlineAgents = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
+                Object.keys(onlineAgents).forEach((nodeId) => {
+                    const watcher = multiLoginWatchers[nodeId];
+                    if (!watcher || (!watcher.running && now - (watcher.updatedAt || 0) > 60000)) {
+                        setMultiLoginWatcher(nodeId, true);
+                    }
+                });
+            }
             return refreshMultiLoginInventory(function () {
                 sendJson(res, 200, multiLoginStatus());
             });
@@ -1467,6 +1506,22 @@ module.exports.maintctl = function (parent) {
             } catch (e) {
                 return sendJson(res, 500, { error: e.message });
             }
+        }
+
+        if (action === 'multiLoginEnforce') {
+            if (!multiLoginConfig.enabled) return sendJson(res, 400, { error: 'règle désactivée' });
+            const nodeId = String((req.query && req.query.nodeId) || '');
+            const userKey = multiLoginUserKey((req.query && req.query.userKey) || '');
+            const state = multiLoginNodes[nodeId];
+            const selectedUser = state && state.users && state.users.find((entry) => entry.key === userKey);
+            if (!nodeId || !selectedUser) return sendJson(res, 404, { error: 'session introuvable sur ce poste' });
+            if (!multiLoginRemoteSessions(nodeId, userKey).length) return sendJson(res, 409, { error: 'le conflit n’est plus présent' });
+            enforceMultiLogin(nodeId, selectedUser, {
+                source: 'manual',
+                force: true,
+                immediate: multiLoginConfig.mode === 'block',
+            });
+            return sendJson(res, 200, { ok: true });
         }
 
         if (action === 'nodeHistory') {

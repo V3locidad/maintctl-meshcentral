@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.8
+
+- Un nouvel utilisateur découvert par l’inventaire WTS déclenche désormais la règle même si l’agent n’a pas transmis l’événement Security 4624.
+- Ce rattrapage couvre notamment les postes inclus dans le total des agents en ligne mais absents du compteur vert « Journal Windows ».
+- Les watchers absents ou arrêtés sont désormais relancés automatiquement, avec un intervalle minimal d’une minute entre deux essais.
+- Chaque poste affiché dans un conflit dispose d’un bouton « Afficher la demande ici » permettant de relancer immédiatement le choix sur le poste où l’utilisateur souhaite continuer.
+- Une relance manuelle remplace proprement une ancienne demande restée en attente pour le même compte et le même poste.
+
 ## 0.14.7
 
 - Correction de la course `child exited with code: 0/undefined` du composant `message-box` de MeshAgent, qui pouvait perdre un clic Oui ou Non pourtant effectué.
