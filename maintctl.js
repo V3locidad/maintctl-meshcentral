@@ -17,7 +17,7 @@ const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
 const MULTI_LOGIN_EVENT_MAX = 10000;
-const MULTI_LOGIN_EVENT_RETENTION_DAYS = 31;
+const MULTI_LOGIN_EVENT_RETENTION_DAYS = 30;
 const MULTI_LOGIN_EVENT_RETENTION_MS = MULTI_LOGIN_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MULTI_LOGIN_SEEN_TTL_MS = 10 * 60 * 1000;
 const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
@@ -65,28 +65,35 @@ function writeMaintConfig(config) {
     fs.renameSync(tmp, MAINT_CONFIG_FILE);
 }
 
-function loadMultiLoginEvents() {
+function loadMultiLoginArchive() {
     try {
-        if (!fs.existsSync(MULTI_LOGIN_EVENTS_FILE)) return [];
+        if (!fs.existsSync(MULTI_LOGIN_EVENTS_FILE)) return { events: [], conflicts: [] };
         const parsed = JSON.parse(fs.readFileSync(MULTI_LOGIN_EVENTS_FILE, 'utf8'));
         const events = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.events) ? parsed.events : []);
+        const conflicts = parsed && Array.isArray(parsed.conflicts) ? parsed.conflicts : [];
         const cutoff = Date.now() - MULTI_LOGIN_EVENT_RETENTION_MS;
-        return events.filter((event) => event && Number(event.time) >= cutoff)
-            .sort((a, b) => Number(b.time) - Number(a.time))
-            .slice(0, MULTI_LOGIN_EVENT_MAX);
+        return {
+            events: events.filter((event) => event && Number(event.time) >= cutoff)
+                .sort((a, b) => Number(b.time) - Number(a.time))
+                .slice(0, MULTI_LOGIN_EVENT_MAX),
+            conflicts: conflicts.filter((conflict) => conflict && Number(conflict.endedAt || conflict.lastSeenAt || conflict.firstSeenAt) >= cutoff)
+                .sort((a, b) => Number(b.firstSeenAt) - Number(a.firstSeenAt))
+                .slice(0, MULTI_LOGIN_EVENT_MAX),
+        };
     } catch (e) {
         console.log('maintctl: historique connexions multiples illisible : ' + e.message);
-        return [];
+        return { events: [], conflicts: [] };
     }
 }
 
-function writeMultiLoginEvents(events) {
+function writeMultiLoginArchive(events, conflicts) {
     const tmp = MULTI_LOGIN_EVENTS_FILE + '.tmp';
     try {
         fs.writeFileSync(tmp, JSON.stringify({
-            version: 1,
+            version: 2,
             retentionDays: MULTI_LOGIN_EVENT_RETENTION_DAYS,
             events: events,
+            conflicts: conflicts,
         }, null, 2) + '\n');
         fs.renameSync(tmp, MULTI_LOGIN_EVENTS_FILE);
     } catch (e) {
@@ -469,7 +476,10 @@ module.exports.maintctl = function (parent) {
     const multiLoginMeshLabels = {};  // meshId -> name
     const multiLoginRequests = {};    // dispatchId -> proposition en cours
     const multiLoginLogoffs = {};     // dispatchId -> fermeture demandée
-    const multiLoginEvents = loadMultiLoginEvents();
+    const multiLoginArchive = loadMultiLoginArchive();
+    const multiLoginEvents = multiLoginArchive.events;
+    const multiLoginConflictHistory = multiLoginArchive.conflicts;
+    const multiLoginInventoryStartedAt = Date.now();
     let multiLoginEventsSaveTimer = null;
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
@@ -528,12 +538,17 @@ module.exports.maintctl = function (parent) {
 
     function pruneMultiLoginEvents() {
         const cutoff = Date.now() - MULTI_LOGIN_EVENT_RETENTION_MS;
-        const before = multiLoginEvents.length;
+        const before = multiLoginEvents.length + multiLoginConflictHistory.length;
         for (let i = multiLoginEvents.length - 1; i >= 0; i--) {
             if (!multiLoginEvents[i] || Number(multiLoginEvents[i].time) < cutoff) multiLoginEvents.splice(i, 1);
         }
+        for (let i = multiLoginConflictHistory.length - 1; i >= 0; i--) {
+            const conflict = multiLoginConflictHistory[i];
+            if (!conflict || Number(conflict.endedAt || conflict.lastSeenAt || conflict.firstSeenAt) < cutoff) multiLoginConflictHistory.splice(i, 1);
+        }
         if (multiLoginEvents.length > MULTI_LOGIN_EVENT_MAX) multiLoginEvents.length = MULTI_LOGIN_EVENT_MAX;
-        return multiLoginEvents.length !== before;
+        if (multiLoginConflictHistory.length > MULTI_LOGIN_EVENT_MAX) multiLoginConflictHistory.length = MULTI_LOGIN_EVENT_MAX;
+        return (multiLoginEvents.length + multiLoginConflictHistory.length) !== before;
     }
 
     function saveMultiLoginEventsSoon() {
@@ -541,7 +556,7 @@ module.exports.maintctl = function (parent) {
         multiLoginEventsSaveTimer = setTimeout(() => {
             multiLoginEventsSaveTimer = null;
             pruneMultiLoginEvents();
-            writeMultiLoginEvents(multiLoginEvents);
+            writeMultiLoginArchive(multiLoginEvents, multiLoginConflictHistory);
         }, 500);
         if (multiLoginEventsSaveTimer && typeof multiLoginEventsSaveTimer.unref === 'function') multiLoginEventsSaveTimer.unref();
     }
@@ -594,6 +609,7 @@ module.exports.maintctl = function (parent) {
             updatedAt: Date.now(),
             primed: true,
         };
+        syncMultiLoginConflictHistory();
     }
 
     function handleMultiLoginSecurityEvent(nodeId, command, agent) {
@@ -648,6 +664,7 @@ module.exports.maintctl = function (parent) {
         Object.keys(multiLoginSeenEvents).forEach((key) => {
             if (now - multiLoginSeenEvents[key] > MULTI_LOGIN_SEEN_TTL_MS) delete multiLoginSeenEvents[key];
         });
+        syncMultiLoginConflictHistory();
     }
 
     function multiLoginRemoteSessions(nodeId, userKey) {
@@ -821,8 +838,7 @@ module.exports.maintctl = function (parent) {
         });
     }
 
-    function multiLoginStatus() {
-        if (pruneMultiLoginEvents()) saveMultiLoginEventsSoon();
+    function currentMultiLoginInventory() {
         const sessions = [];
         const online = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
         Object.keys(multiLoginNodes).forEach((nodeId) => {
@@ -845,9 +861,80 @@ module.exports.maintctl = function (parent) {
             byUser[session.userKey].push(session);
         });
         const conflicts = Object.keys(byUser).filter((key) => byUser[key].length > 1).map((key) => ({
+            userKey: key,
             username: byUser[key][0].username,
             sessions: byUser[key],
         }));
+        return { sessions: sessions, conflicts: conflicts, online: online };
+    }
+
+    function conflictSessionSnapshot(conflict) {
+        return (conflict.sessions || []).map((session) => ({
+            nodeId: session.nodeId,
+            name: session.name,
+            mesh: session.mesh,
+        })).sort((a, b) => String(a.nodeId).localeCompare(String(b.nodeId)));
+    }
+
+    function syncMultiLoginConflictHistory(inventory) {
+        inventory = inventory || currentMultiLoginInventory();
+        const now = Date.now();
+        const liveKeys = new Set();
+        let changed = false;
+        (inventory.conflicts || []).forEach((conflict) => {
+            liveKeys.add(conflict.userKey);
+            const sessions = conflictSessionSnapshot(conflict);
+            let record = multiLoginConflictHistory.find((item) => item && !item.endedAt && item.userKey === conflict.userKey);
+            if (!record) {
+                record = {
+                    id: 'conflict-' + crypto.randomBytes(8).toString('hex'),
+                    userKey: conflict.userKey,
+                    username: conflict.username,
+                    firstSeenAt: now,
+                    lastSeenAt: now,
+                    endedAt: null,
+                    sessions: sessions,
+                };
+                multiLoginConflictHistory.unshift(record);
+                changed = true;
+            } else {
+                const oldSessions = JSON.stringify(record.sessions || []);
+                const newSessions = JSON.stringify(sessions);
+                if (record.username !== conflict.username || oldSessions !== newSessions) {
+                    record.username = conflict.username;
+                    record.sessions = sessions;
+                    changed = true;
+                }
+                // Une écriture par minute suffit pour dater la dernière
+                // observation sans réécrire le fichier à chaque rafraîchissement.
+                if (now - Number(record.lastSeenAt || 0) >= 60000) {
+                    record.lastSeenAt = now;
+                    changed = true;
+                }
+            }
+        });
+        multiLoginConflictHistory.forEach((record) => {
+            if (!record || record.endedAt || liveKeys.has(record.userKey)) return;
+            const startupGrace = now - multiLoginInventoryStartedAt < 2 * 60 * 1000;
+            const recordReady = (record.sessions || []).every((session) => {
+                if (!inventory.online[session.nodeId]) return !startupGrace;
+                return multiLoginNodes[session.nodeId] && multiLoginNodes[session.nodeId].primed !== false;
+            });
+            if (!recordReady) return;
+            record.lastSeenAt = now;
+            record.endedAt = now;
+            changed = true;
+        });
+        if (pruneMultiLoginEvents()) changed = true;
+        if (changed) saveMultiLoginEventsSoon();
+        return inventory;
+    }
+
+    function multiLoginStatus() {
+        const inventory = syncMultiLoginConflictHistory();
+        const sessions = inventory.sessions;
+        const conflicts = inventory.conflicts;
+        const online = inventory.online;
         const onlineNodeIds = Object.keys(online);
         const runningWatchers = onlineNodeIds.filter((nodeId) => multiLoginWatchers[nodeId] && multiLoginWatchers[nodeId].running).length;
         const watcherErrors = onlineNodeIds.filter((nodeId) => multiLoginWatchers[nodeId] && multiLoginWatchers[nodeId].ok === false).map((nodeId) => ({
@@ -859,6 +946,9 @@ module.exports.maintctl = function (parent) {
             settings: multiLoginConfig,
             sessions: sessions,
             conflicts: conflicts,
+            conflictHistory: multiLoginConflictHistory.slice(0, 500),
+            conflictHistoryTotal: multiLoginConflictHistory.length,
+            conflictRetentionDays: MULTI_LOGIN_EVENT_RETENTION_DAYS,
             events: multiLoginEvents.slice(0, 500),
             eventTotal: multiLoginEvents.length,
             eventRetentionDays: MULTI_LOGIN_EVENT_RETENTION_DAYS,
@@ -1315,9 +1405,13 @@ module.exports.maintctl = function (parent) {
                 updatedAt: Date.now(),
                 primed: true,
             };
-            if (!previous || previous.primed === false) return;
+            if (!previous || previous.primed === false) {
+                syncMultiLoginConflictHistory();
+                return;
+            }
             const oldKeys = previous.users.map((entry) => entry.key);
             users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => enforceMultiLogin(nodeId, entry));
+            syncMultiLoginConflictHistory();
         } catch (e) {
             console.log('maintctl: multi-login coreinfo error: ' + e.message);
         }
@@ -1332,6 +1426,7 @@ module.exports.maintctl = function (parent) {
                 if (offline) {
                     delete multiLoginNodes[event.nodeid];
                     delete multiLoginWatchers[event.nodeid];
+                    syncMultiLoginConflictHistory();
                 }
                 else if (!multiLoginNodes[event.nodeid]) {
                     multiLoginNodes[event.nodeid] = { meshid: event.meshid || '', users: [], updatedAt: Date.now(), primed: false };

@@ -589,6 +589,8 @@
     <h3>Conflits actuellement détectés</h3>
     <div style="font-size:11px;color:#777;margin:-4px 0 8px 0">L’inventaire reste actif et les conflits restent visibles même lorsque le blocage est désactivé.</div>
     <div id="multiLoginConflicts"><div class="empty">Aucun conflit.</div></div>
+    <h3 id="multiLoginConflictHistoryTitle" style="margin-top:18px">Historique des conflits détectés</h3>
+    <div id="multiLoginConflictHistory"><div class="empty">Aucun conflit conservé.</div></div>
   </div>
 
   <div class="multiLoginCard" style="min-height:180px">
@@ -3077,6 +3079,16 @@ refreshAgents().then(function () {
     try { return new Date(ms).toLocaleString('fr-FR'); } catch (_) { return '—'; }
   }
 
+  function multiLoginFullDate(ms) {
+    if (!ms) return '—';
+    try {
+      return new Date(ms).toLocaleString('fr-FR', {
+        weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+    } catch (_) { return '—'; }
+  }
+
   function selectedMultiLoginMode() {
     var item = document.querySelector('input[name="multiLoginMode"]:checked');
     return item ? item.value : 'block';
@@ -3126,6 +3138,29 @@ refreshAgents().then(function () {
         }).join('')
       : '<div class="empty">Aucun conflit actuellement détecté.</div>';
 
+    var conflictHistory = data.conflictHistory || [];
+    var conflictHistoryTotal = Number(data.conflictHistoryTotal || conflictHistory.length);
+    var conflictRetentionDays = Number(data.conflictRetentionDays || 30);
+    document.getElementById('multiLoginConflictHistoryTitle').textContent = 'Historique des conflits — conservation ' + conflictRetentionDays + ' jours (' + conflictHistoryTotal + ')';
+    document.getElementById('multiLoginConflictHistory').innerHTML = conflictHistory.length
+      ? '<div style="max-height:360px;overflow:auto"><table class="multiLoginTable"><thead><tr>'
+        + '<th>Utilisateur</th><th>Salles et postes concernés</th><th>Première détection</th><th>Dernière observation</th><th>Fin</th>'
+        + '</tr></thead><tbody>'
+        + conflictHistory.map(function (conflict) {
+            var locations = (conflict.sessions || []).map(function (session) {
+              return escapeHtml((session.mesh || 'Salle inconnue') + ' — ' + (session.name || session.nodeId || 'Poste inconnu'));
+            }).join('<br>');
+            return '<tr><td><b>' + escapeHtml(conflict.username || conflict.userKey || '') + '</b>'
+              + (conflict.endedAt ? '<div style="font-size:10px;color:#777">Terminé</div>' : '<div style="font-size:10px;color:#b45309">En cours</div>')
+              + '</td><td>' + locations + '</td>'
+              + '<td>' + escapeHtml(multiLoginFullDate(conflict.firstSeenAt)) + '</td>'
+              + '<td>' + escapeHtml(multiLoginFullDate(conflict.lastSeenAt)) + '</td>'
+              + '<td>' + (conflict.endedAt ? escapeHtml(multiLoginFullDate(conflict.endedAt)) : '<b>En cours</b>') + '</td></tr>';
+          }).join('')
+        + '</tbody></table></div>'
+        + (conflictHistoryTotal > conflictHistory.length ? '<div class="empty">Affichage limité aux ' + conflictHistory.length + ' conflits les plus récents sur ' + conflictHistoryTotal + ' conservés.</div>' : '')
+      : '<div class="empty">Aucun conflit conservé sur les ' + conflictRetentionDays + ' derniers jours.</div>';
+
     var sessions = data.sessions || [];
     document.getElementById('multiLoginSessions').innerHTML = sessions.length
       ? sessions.map(function (session) {
@@ -3136,7 +3171,7 @@ refreshAgents().then(function () {
 
     var events = data.events || [];
     var eventTotal = Number(data.eventTotal || events.length);
-    var eventRetentionDays = Number(data.eventRetentionDays || 31);
+    var eventRetentionDays = Number(data.eventRetentionDays || 30);
     document.getElementById('multiLoginEventsTitle').textContent = 'Journal des décisions — conservation ' + eventRetentionDays + ' jours (' + eventTotal + ')';
     document.getElementById('multiLoginEvents').innerHTML = events.length
       ? events.map(function (event) {

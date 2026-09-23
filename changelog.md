@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.24
+
+- Ajout d’un historique dédié des conflits de connexions multiples, conservé 30 jours même lorsque la règle de blocage est désactivée.
+- Chaque conflit mémorise le compte, les salles et postes concernés, le jour, la date et l’heure de première détection, la dernière observation et l’heure de fin.
+- Les conflits en cours et terminés sont clairement distingués dans l’interface ; l’historique survit aux rechargements et redémarrages du plugin.
+
 ## 0.14.23
 
 - Le journal des décisions de connexions multiples est maintenant enregistré dans `maintctl-multilogin-events.json` et conservé 31 jours, y compris après un rechargement ou un redémarrage du plugin.
