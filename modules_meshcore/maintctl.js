@@ -96,7 +96,12 @@ function consoleaction(args, rights, sessionid, parent) {
     mesh = parent;
     cleanupMaintctlTempArtifacts(false);
     var fnname = args.pluginaction || (args._ && args._[1]);
-    dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
+    // La requête WTS est volontairement envoyée toutes les deux secondes par
+    // le serveur. Ne pas l'écrire à chaque passage : elle noyait les seules
+    // lignes utiles au diagnostic (affichage, choix et fermeture de session).
+    if (fnname !== 'duplicateSessionSnapshotRequest') {
+        dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
+    }
     try {
         switch (fnname) {
             case 'ping':
@@ -912,107 +917,69 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 }
 
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
-    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
-    var resultFile = tmpRoot + '\\maintctl_guard_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
-    var fs = require('fs');
     var done = false;
-    var pollTimer = null;
     var safetyTimer = null;
-    var exitTimer = null;
-    var child = null;
+    var dialog = null;
 
     function finish(ok, response, note) {
         if (done) return;
         done = true;
-        if (pollTimer) { try { clearInterval(pollTimer); } catch (_) {} }
         if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
-        if (exitTimer) { try { clearTimeout(exitTimer); } catch (_) {} }
-        if (child) { try { child.exit(); } catch (_) {} }
-        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
+        if (dialog && typeof dialog.close === 'function') {
+            try { dialog.close(); } catch (_) {}
+        }
         onDone(ok, response || 0, note || '');
     }
 
-    function acceptResponse(value) {
-        var response = parseInt(value, 10) || 0;
-        var valid = yesNo ? (response === 6 || response === 7) : response === 1;
-        if (valid) finish(true, response, 'dialogue interactif MeshAgent affiché');
-        return valid;
-    }
-
-    // Ce module est injecté dans un vrai processus MeshAgent lancé avec
-    // SpawnTypes.USER dans la session WTS ciblée. La fenêtre appartient donc
-    // au bureau de l'utilisateur et accepte les clics, contrairement à une
-    // notification WTSSendMessage créée par le service dans la session 0.
-    var childModule = [
-        'module.exports.show=function(args){',
-        'var parent=require("child-container");',
-        'var fs=require("fs");',
-        'var GM=require("_GenericMarshal");',
-        'var user32=GM.CreateNativeProxy("user32.dll");',
-        'user32.CreateMethod("MessageBoxW");',
-        'var title=GM.CreateVariable(Buffer.from(args.title64,"base64").toString(),{wide:true});',
-        'var message=GM.CreateVariable(Buffer.from(args.message64,"base64").toString(),{wide:true});',
-        'var call=user32.MessageBoxW.async(0,message,title,args.style);',
-        'call.then(function(r){',
-        'var response=(r&&r.Val!=null)?r.Val:0;',
-        'try{fs.writeFileSync(args.resultFile,"RESULT:"+response);}catch(e){}',
-        'try{parent.message({command:"response",response:response});}catch(e){}',
-        'setTimeout(function(){process.exit();},1500);',
-        '},function(e){',
-        'try{fs.writeFileSync(args.resultFile,"ERROR:"+String(e||"MessageBoxW"));}catch(x){}',
-        'try{parent.message({command:"error",error:String(e||"MessageBoxW")});}catch(x){}',
-        'setTimeout(function(){process.exit();},1500);',
-        '});',
-        '};',
-    ].join('');
-
     try {
-        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
-        var style = (yesNo ? 4 : 0) + 48 + 256 + 4096 + 65536 + 262144;
-        child = require('child-container').create({
-            uid: parseInt(sessionId, 10),
-            modules: [{ name: 'maintctl-dialog-child', script: childModule }],
-            launch: {
-                module: 'maintctl-dialog-child',
-                method: 'show',
-                args: [{
-                    title64: duplicateUtf8Base64(title),
-                    message64: duplicateUtf8Base64(message),
-                    style: style,
-                    resultFile: resultFile,
-                }],
-            },
+        var sid = parseInt(sessionId, 10);
+        if (yesNo) {
+            // win-userconsent est le composant natif employé par MeshAgent pour
+            // ses propres demandes d'autorisation. Il crée une vraie fenêtre
+            // cliquable dans la session WTS demandée et ne transforme pas la
+            // fermeture de l'enfant en rejet avant d'avoir livré le choix.
+            dialog = require('win-userconsent').create(title, message, '', {
+                uid: sid,
+                timeout: timeoutSeconds * 1000,
+                timeoutAutoAccept: false,
+                noCheck: true,
+                translations: {
+                    Title: title,
+                    Caption: message,
+                    Allow: 'Oui - fermer la session distante',
+                    Deny: 'Non - annuler cette connexion',
+                    Auto: '',
+                },
+            });
+        } else {
+            // Le mode refus n'attend qu'un acquittement. win-dialog utilise le
+            // même mécanisme de session utilisateur avec un unique bouton OK.
+            dialog = require('win-dialog').create(title, message, '', {
+                uid: sid,
+                timeout: timeoutSeconds * 1000,
+                translations: { Title: title, Caption: message, OK: 'OK' },
+            });
+        }
+        if (!dialog || typeof dialog.then !== 'function') {
+            throw new Error('le module de dialogue MeshAgent n\'a pas retourné de promesse');
+        }
+        dbg('duplicateSessionDialog: créé dans la session WTS ' + sid + ' via ' + (yesNo ? 'win-userconsent' : 'win-dialog'));
+
+        dialog.then(function () {
+            finish(true, yesNo ? 6 : 1, 'dialogue interactif MeshAgent affiché');
+        }, function (reason) {
+            // win-userconsent rejette volontairement avec DENIED lorsque le
+            // bouton Non ou la croix est utilisé : c'est une réponse valide.
+            if (yesNo && String(reason || '').toUpperCase() === 'DENIED') {
+                finish(true, 7, 'dialogue interactif MeshAgent affiché');
+                return;
+            }
+            finish(false, 0, 'dialogue interactif MeshAgent : ' + String(reason || 'échec inconnu'));
         });
-        child.on('message', function (msg) {
-            if (msg && msg.command === 'response') acceptResponse(msg.response);
-            else if (msg && msg.command === 'error') finish(false, 0, 'dialogue interactif MeshAgent : ' + String(msg.error || 'erreur'));
-        });
-        child.on('exit', function (code) {
-            if (done) return;
-            exitTimer = setTimeout(function () {
-                if (done) return;
-                try {
-                    if (fs.existsSync(resultFile)) {
-                        var match = fs.readFileSync(resultFile).toString().match(/RESULT:(\d+)/);
-                        if (match && acceptResponse(match[1])) return;
-                    }
-                } catch (_) {}
-                finish(false, 0, 'dialogue interactif MeshAgent arrêté sans réponse (code ' + code + ')');
-            }, 750);
-        });
-        pollTimer = setInterval(function () {
-            if (done) return;
-            try {
-                if (!fs.existsSync(resultFile)) return;
-                var text = fs.readFileSync(resultFile).toString();
-                var match = text.match(/RESULT:(\d+)/);
-                if (match) acceptResponse(match[1]);
-                else if (text.indexOf('ERROR:') === 0) finish(false, 0, 'dialogue interactif MeshAgent : ' + text.substring(6));
-            } catch (_) {}
-        }, 250);
+
         safetyTimer = setTimeout(function () {
             finish(false, 0, 'dialogue interactif MeshAgent : délai dépassé');
-        }, (timeoutSeconds + 20) * 1000);
+        }, (timeoutSeconds + 10) * 1000);
     } catch (e) {
         finish(false, 0, 'dialogue interactif MeshAgent : ' + e);
     }

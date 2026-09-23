@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.15
+
+- Le choix Oui/Non utilise maintenant `win-userconsent`, le composant interactif natif de MeshAgent utilisé pour ses propres demandes d'autorisation. La fenêtre est créée dans la session WTS du nouveau poste avec deux vrais boutons cliquables.
+- Les libellés sont explicitement traduits en français : « Oui - fermer la session distante » et « Non - annuler cette connexion ».
+- Les interrogations WTS automatiques toutes les deux secondes ne remplissent plus `maintctl-agent.log`; seules les actions utiles au diagnostic y sont conservées.
+
 ## 0.14.14
 
 - Le dialogue Oui/Non est maintenant créé par `child-container` dans un véritable processus de la session utilisateur (`SpawnTypes.USER`). Il accepte donc les clics dans le bureau distant, contrairement à la notification système WTS.
