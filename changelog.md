@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.16
+
+- Retour à une boîte Windows Oui/Non classique, comme dans la version 0.14.6, mais le PowerShell qui l'affiche est maintenant lancé directement dans la session WTS de l'utilisateur avec `SpawnTypes.USER`.
+- Le choix est écrit dans un fichier résultat avant la fin du processus. Les erreurs historiques `child exited with code: 0/undefined` ne peuvent donc plus faire perdre un clic Oui ou Non.
+- Le fichier résultat et le script temporaire sont supprimés immédiatement après le choix ou le délai d'expiration.
+
 ## 0.14.15
 
 - Le choix Oui/Non utilise maintenant `win-userconsent`, le composant interactif natif de MeshAgent utilisé pour ses propres demandes d'autorisation. La fenêtre est créée dans la session WTS du nouveau poste avec deux vrais boutons cliquables.
