@@ -587,6 +587,7 @@
 
   <div class="multiLoginCard">
     <h3>Conflits actuellement détectés</h3>
+    <div style="font-size:11px;color:#777;margin:-4px 0 8px 0">L’inventaire reste actif et les conflits restent visibles même lorsque le blocage est désactivé.</div>
     <div id="multiLoginConflicts"><div class="empty">Aucun conflit.</div></div>
   </div>
 
@@ -601,7 +602,7 @@
   </div>
 
   <div class="multiLoginCard">
-    <h3>Dernières décisions</h3>
+    <h3 id="multiLoginEventsTitle">Journal des décisions</h3>
     <div id="multiLoginEvents"><div class="empty">Aucun événement.</div></div>
   </div>
 </div>
@@ -3103,19 +3104,14 @@ refreshAgents().then(function () {
       ? (settings.mode === 'prompt'
           ? 'Mode actif : proposer de fermer la session distante'
           : 'Mode actif : fermer immédiatement la nouvelle session')
-      : 'Connexions multiples autorisées';
+      : 'Connexions multiples autorisées · conflits surveillés';
     var watcher = data.watcher || {};
     var watcherState = document.getElementById('multiLoginWatcherState');
-    if (settings.enabled) {
-      watcherState.style.display = 'inline-block';
-      watcherState.textContent = 'Journal Windows : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0) + ' agent(s)';
-      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0) ? '#d4edda' : '#fff3cd';
-      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
-      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
-    } else {
-      watcherState.style.display = 'none';
-      watcherState.title = '';
-    }
+    watcherState.style.display = 'inline-block';
+    watcherState.textContent = (settings.enabled ? 'Journal Windows : ' : 'Inventaire Windows : ') + (watcher.running || 0) + ' / ' + (watcher.online || 0) + ' agent(s)';
+    watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0) ? '#d4edda' : '#fff3cd';
+    watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
+    watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
 
     var conflicts = data.conflicts || [];
     var conflictCount = document.getElementById('multiLoginConflictCount');
@@ -3139,12 +3135,15 @@ refreshAgents().then(function () {
       : '<tr><td colspan="4" class="empty">Aucune session utilisateur connue sur les agents en ligne.</td></tr>';
 
     var events = data.events || [];
+    var eventTotal = Number(data.eventTotal || events.length);
+    var eventRetentionDays = Number(data.eventRetentionDays || 31);
+    document.getElementById('multiLoginEventsTitle').textContent = 'Journal des décisions — conservation ' + eventRetentionDays + ' jours (' + eventTotal + ')';
     document.getElementById('multiLoginEvents').innerHTML = events.length
       ? events.map(function (event) {
           return '<div class="multiLoginEvent"><b>' + multiLoginDate(event.time) + '</b> — '
             + escapeHtml(event.username || '') + ' — ' + escapeHtml(event.detail || event.kind || '') + '</div>';
-        }).join('')
-      : '<div class="empty">Aucun événement depuis le dernier chargement du plugin.</div>';
+        }).join('') + (eventTotal > events.length ? '<div class="empty">Affichage limité aux ' + events.length + ' décisions les plus récentes sur ' + eventTotal + ' conservées.</div>' : '')
+      : '<div class="empty">Aucune décision conservée sur les ' + eventRetentionDays + ' derniers jours.</div>';
   }
 
   function loadMultiLogin() {

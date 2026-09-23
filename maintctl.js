@@ -16,9 +16,12 @@ const RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const DOWNLOAD_TTL_MS = 30 * 60 * 1000; // 30 min
 const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
-const MULTI_LOGIN_EVENT_MAX = 100;
+const MULTI_LOGIN_EVENT_MAX = 10000;
+const MULTI_LOGIN_EVENT_RETENTION_DAYS = 31;
+const MULTI_LOGIN_EVENT_RETENTION_MS = MULTI_LOGIN_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MULTI_LOGIN_SEEN_TTL_MS = 10 * 60 * 1000;
 const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
+const MULTI_LOGIN_EVENTS_FILE = path.join(__dirname, 'maintctl-multilogin-events.json');
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
 const downloadTokens = {};         // token -> { kind, payload, expires }
@@ -60,6 +63,36 @@ function writeMaintConfig(config) {
     const tmp = MAINT_CONFIG_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
     fs.renameSync(tmp, MAINT_CONFIG_FILE);
+}
+
+function loadMultiLoginEvents() {
+    try {
+        if (!fs.existsSync(MULTI_LOGIN_EVENTS_FILE)) return [];
+        const parsed = JSON.parse(fs.readFileSync(MULTI_LOGIN_EVENTS_FILE, 'utf8'));
+        const events = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.events) ? parsed.events : []);
+        const cutoff = Date.now() - MULTI_LOGIN_EVENT_RETENTION_MS;
+        return events.filter((event) => event && Number(event.time) >= cutoff)
+            .sort((a, b) => Number(b.time) - Number(a.time))
+            .slice(0, MULTI_LOGIN_EVENT_MAX);
+    } catch (e) {
+        console.log('maintctl: historique connexions multiples illisible : ' + e.message);
+        return [];
+    }
+}
+
+function writeMultiLoginEvents(events) {
+    const tmp = MULTI_LOGIN_EVENTS_FILE + '.tmp';
+    try {
+        fs.writeFileSync(tmp, JSON.stringify({
+            version: 1,
+            retentionDays: MULTI_LOGIN_EVENT_RETENTION_DAYS,
+            events: events,
+        }, null, 2) + '\n');
+        fs.renameSync(tmp, MULTI_LOGIN_EVENTS_FILE);
+    } catch (e) {
+        try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+        console.log('maintctl: enregistrement historique connexions multiples impossible : ' + e.message);
+    }
 }
 
 function normalizeMultiLoginConfig(value) {
@@ -436,7 +469,8 @@ module.exports.maintctl = function (parent) {
     const multiLoginMeshLabels = {};  // meshId -> name
     const multiLoginRequests = {};    // dispatchId -> proposition en cours
     const multiLoginLogoffs = {};     // dispatchId -> fermeture demandée
-    const multiLoginEvents = [];
+    const multiLoginEvents = loadMultiLoginEvents();
+    let multiLoginEventsSaveTimer = null;
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
     const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
@@ -492,9 +526,30 @@ module.exports.maintctl = function (parent) {
         };
     }
 
+    function pruneMultiLoginEvents() {
+        const cutoff = Date.now() - MULTI_LOGIN_EVENT_RETENTION_MS;
+        const before = multiLoginEvents.length;
+        for (let i = multiLoginEvents.length - 1; i >= 0; i--) {
+            if (!multiLoginEvents[i] || Number(multiLoginEvents[i].time) < cutoff) multiLoginEvents.splice(i, 1);
+        }
+        if (multiLoginEvents.length > MULTI_LOGIN_EVENT_MAX) multiLoginEvents.length = MULTI_LOGIN_EVENT_MAX;
+        return multiLoginEvents.length !== before;
+    }
+
+    function saveMultiLoginEventsSoon() {
+        if (multiLoginEventsSaveTimer) return;
+        multiLoginEventsSaveTimer = setTimeout(() => {
+            multiLoginEventsSaveTimer = null;
+            pruneMultiLoginEvents();
+            writeMultiLoginEvents(multiLoginEvents);
+        }, 500);
+        if (multiLoginEventsSaveTimer && typeof multiLoginEventsSaveTimer.unref === 'function') multiLoginEventsSaveTimer.unref();
+    }
+
     function addMultiLoginEvent(event) {
         multiLoginEvents.unshift(Object.assign({ time: Date.now() }, event));
-        if (multiLoginEvents.length > MULTI_LOGIN_EVENT_MAX) multiLoginEvents.length = MULTI_LOGIN_EVENT_MAX;
+        pruneMultiLoginEvents();
+        saveMultiLoginEventsSoon();
     }
 
     function sendMultiLoginAgent(nodeId, payload) {
@@ -767,6 +822,7 @@ module.exports.maintctl = function (parent) {
     }
 
     function multiLoginStatus() {
+        if (pruneMultiLoginEvents()) saveMultiLoginEventsSoon();
         const sessions = [];
         const online = (obj.meshServer && obj.meshServer.webserver && obj.meshServer.webserver.wsagents) || {};
         Object.keys(multiLoginNodes).forEach((nodeId) => {
@@ -803,7 +859,9 @@ module.exports.maintctl = function (parent) {
             settings: multiLoginConfig,
             sessions: sessions,
             conflicts: conflicts,
-            events: multiLoginEvents.slice(0, 50),
+            events: multiLoginEvents.slice(0, 500),
+            eventTotal: multiLoginEvents.length,
+            eventRetentionDays: MULTI_LOGIN_EVENT_RETENTION_DAYS,
             pending: Object.keys(multiLoginRequests).length,
             watcher: {
                 running: runningWatchers,
@@ -1278,7 +1336,11 @@ module.exports.maintctl = function (parent) {
                 else if (!multiLoginNodes[event.nodeid]) {
                     multiLoginNodes[event.nodeid] = { meshid: event.meshid || '', users: [], updatedAt: Date.now(), primed: false };
                 }
-                if (!offline && multiLoginConfig.enabled) {
+                // L'inventaire reste actif même lorsque le blocage est
+                // désactivé afin de continuer à afficher les conflits. La
+                // fonction enforceMultiLogin vérifie elle-même la règle avant
+                // toute fermeture ou tout dialogue.
+                if (!offline) {
                     const connectedNodeId = event.nodeid;
                     const startTimer = setTimeout(() => setMultiLoginWatcher(connectedNodeId, true), 1500);
                     if (startTimer && typeof startTimer.unref === 'function') startTimer.unref();
@@ -1301,7 +1363,7 @@ module.exports.maintctl = function (parent) {
             }
             if (obj.meshServer) obj.meshServer.__maintctlMultiLoginListener = obj;
             refreshMultiLoginInventory(function () {
-                if (multiLoginConfig.enabled) broadcastMultiLoginWatcher(true);
+                broadcastMultiLoginWatcher(true);
             });
         } catch (e) {
             console.log('maintctl: initialisation connexions multiples: ' + e.message);
@@ -1450,7 +1512,9 @@ module.exports.maintctl = function (parent) {
                 if (!next.enabled) {
                     Object.keys(multiLoginRequests).forEach((id) => delete multiLoginRequests[id]);
                 }
-                broadcastMultiLoginWatcher(next.enabled);
+                // Ne pas arrêter l'inventaire : les conflits doivent rester
+                // visibles même lorsque les connexions multiples sont permises.
+                broadcastMultiLoginWatcher(true);
                 addMultiLoginEvent({
                     kind: 'settings',
                     username: (user && (user.name || user._id)) || 'administrateur',

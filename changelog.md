@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.23
+
+- Le journal des décisions de connexions multiples est maintenant enregistré dans `maintctl-multilogin-events.json` et conservé 31 jours, y compris après un rechargement ou un redémarrage du plugin.
+- Jusqu’à 10 000 décisions du mois sont conservées ; l’interface affiche les 500 plus récentes et indique le nombre total archivé.
+- L’inventaire des sessions Windows continue de fonctionner lorsque le blocage des connexions multiples est désactivé.
+- Les conflits actuellement détectés restent donc visibles sans déclencher de dialogue ni de fermeture de session tant que la règle est désactivée.
+
 ## 0.14.22
 
 - Retour complet au comportement fonctionnel de la version 0.14.6 pour la détection, le dialogue Oui/Non et les fermetures de session.
