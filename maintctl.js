@@ -440,6 +440,7 @@ module.exports.maintctl = function (parent) {
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
     const multiLoginRecentEnforcements = {}; // nodeId/user -> date, anti double coreinfo+4624
+    const multiLoginStartedAt = Date.now();
 
     function multiLoginDisplay(value) {
         let raw = value;
@@ -469,6 +470,16 @@ module.exports.maintctl = function (parent) {
             out.push({ key: key, display: display });
         });
         return out;
+    }
+
+    function multiLoginComparisonKeys(previous) {
+        if (previous && (previous.primed || previous.enforceFirstUsers)) {
+            return (previous.users || []).map((entry) => entry.key);
+        }
+        // Un nœud totalement inconnu après la phase d'amorçage correspond à
+        // une arrivée tardive ; contrôler sa première liste d'utilisateurs.
+        if (!previous && Date.now() - multiLoginStartedAt > 30000) return [];
+        return null;
     }
 
     function multiLoginExcluded(key) {
@@ -542,9 +553,7 @@ module.exports.maintctl = function (parent) {
         if (!nodeId) return [];
         const previous = multiLoginNodes[nodeId];
         const users = multiLoginUsers(values);
-        const previousKeys = previous && previous.primed
-            ? previous.users.map((entry) => entry.key)
-            : null;
+        const previousKeys = multiLoginComparisonKeys(previous);
         multiLoginNodes[nodeId] = {
             meshid: (agent && agent.dbMeshKey) || (previous && previous.meshid) || '',
             users: users,
@@ -1292,9 +1301,11 @@ module.exports.maintctl = function (parent) {
                 updatedAt: Date.now(),
                 primed: true,
             };
-            if (!previous || previous.primed === false) return;
-            const oldKeys = previous.users.map((entry) => entry.key);
-            users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => enforceMultiLogin(nodeId, entry));
+            const oldKeys = multiLoginComparisonKeys(previous);
+            if (!oldKeys) return;
+            users.filter((entry) => oldKeys.indexOf(entry.key) < 0).forEach((entry) => {
+                enforceMultiLogin(nodeId, entry, { source: previous && previous.enforceFirstUsers ? 'first-coreinfo' : 'coreinfo' });
+            });
         } catch (e) {
             console.log('maintctl: multi-login coreinfo error: ' + e.message);
         }
@@ -1311,7 +1322,16 @@ module.exports.maintctl = function (parent) {
                     delete multiLoginWatchers[event.nodeid];
                 }
                 else if (!multiLoginNodes[event.nodeid]) {
-                    multiLoginNodes[event.nodeid] = { meshid: event.meshid || '', users: [], updatedAt: Date.now(), primed: false };
+                    multiLoginNodes[event.nodeid] = {
+                        meshid: event.meshid || '',
+                        users: [],
+                        updatedAt: Date.now(),
+                        primed: false,
+                        // Contrairement à l'amorçage silencieux du serveur, un
+                        // agent qui vient de se connecter doit faire contrôler
+                        // les utilisateurs présents dans sa première remontée.
+                        enforceFirstUsers: true,
+                    };
                 }
                 if (!offline && multiLoginConfig.enabled) {
                     const connectedNodeId = event.nodeid;

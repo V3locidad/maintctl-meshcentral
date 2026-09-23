@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.9
+
+- La première remontée `coreinfo` ou WTS d’un agent qui vient de se connecter est maintenant considérée comme une nouvelle arrivée et applique immédiatement la règle aux utilisateurs présents.
+- L’amorçage global au redémarrage de MeshCentral reste silencieux afin de ne pas choisir arbitrairement entre des sessions qui étaient déjà ouvertes avant le redémarrage.
+- Un poste découvert plus de trente secondes après le chargement du plugin bénéficie du même contrôle, même si son événement `nodeconnect` n’a pas été reçu.
+
 ## 0.14.8
 
 - Un nouvel utilisateur découvert par l’inventaire WTS déclenche désormais la règle même si l’agent n’a pas transmis l’événement Security 4624.
