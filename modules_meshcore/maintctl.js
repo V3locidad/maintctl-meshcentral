@@ -914,16 +914,108 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
     var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
     var resultFile = tmpRoot + '\\maintctl_guard_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
-    var script = buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds, resultFile);
-    runPowerShell(script, (timeoutSeconds + 20) * 1000, function (ok, response, log, note) {
-        response = parseInt(response, 10) || 0;
+    var fs = require('fs');
+    var done = false;
+    var pollTimer = null;
+    var safetyTimer = null;
+    var exitTimer = null;
+    var child = null;
+
+    function finish(ok, response, note) {
+        if (done) return;
+        done = true;
+        if (pollTimer) { try { clearInterval(pollTimer); } catch (_) {} }
+        if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
+        if (exitTimer) { try { clearTimeout(exitTimer); } catch (_) {} }
+        if (child) { try { child.exit(); } catch (_) {} }
+        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
+        onDone(ok, response || 0, note || '');
+    }
+
+    function acceptResponse(value) {
+        var response = parseInt(value, 10) || 0;
         var valid = yesNo ? (response === 6 || response === 7) : response === 1;
-        var succeeded = !!(ok && valid);
-        var detail = succeeded
-            ? 'dialogue WTS Windows affiché'
-            : ('dialogue WTS Windows impossible : ' + (note || (log || '').slice(-500) || 'réponse ' + response));
-        onDone(succeeded, response, detail);
-    }, resultFile);
+        if (valid) finish(true, response, 'dialogue interactif MeshAgent affiché');
+        return valid;
+    }
+
+    // Ce module est injecté dans un vrai processus MeshAgent lancé avec
+    // SpawnTypes.USER dans la session WTS ciblée. La fenêtre appartient donc
+    // au bureau de l'utilisateur et accepte les clics, contrairement à une
+    // notification WTSSendMessage créée par le service dans la session 0.
+    var childModule = [
+        'module.exports.show=function(args){',
+        'var parent=require("child-container");',
+        'var fs=require("fs");',
+        'var GM=require("_GenericMarshal");',
+        'var user32=GM.CreateNativeProxy("user32.dll");',
+        'user32.CreateMethod("MessageBoxW");',
+        'var title=GM.CreateVariable(Buffer.from(args.title64,"base64").toString(),{wide:true});',
+        'var message=GM.CreateVariable(Buffer.from(args.message64,"base64").toString(),{wide:true});',
+        'var call=user32.MessageBoxW.async(0,message,title,args.style);',
+        'call.then(function(r){',
+        'var response=(r&&r.Val!=null)?r.Val:0;',
+        'try{fs.writeFileSync(args.resultFile,"RESULT:"+response);}catch(e){}',
+        'try{parent.message({command:"response",response:response});}catch(e){}',
+        'setTimeout(function(){process.exit();},1500);',
+        '},function(e){',
+        'try{fs.writeFileSync(args.resultFile,"ERROR:"+String(e||"MessageBoxW"));}catch(x){}',
+        'try{parent.message({command:"error",error:String(e||"MessageBoxW")});}catch(x){}',
+        'setTimeout(function(){process.exit();},1500);',
+        '});',
+        '};',
+    ].join('');
+
+    try {
+        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
+        var style = (yesNo ? 4 : 0) + 48 + 256 + 4096 + 65536 + 262144;
+        child = require('child-container').create({
+            uid: parseInt(sessionId, 10),
+            modules: [{ name: 'maintctl-dialog-child', script: childModule }],
+            launch: {
+                module: 'maintctl-dialog-child',
+                method: 'show',
+                args: [{
+                    title64: duplicateUtf8Base64(title),
+                    message64: duplicateUtf8Base64(message),
+                    style: style,
+                    resultFile: resultFile,
+                }],
+            },
+        });
+        child.on('message', function (msg) {
+            if (msg && msg.command === 'response') acceptResponse(msg.response);
+            else if (msg && msg.command === 'error') finish(false, 0, 'dialogue interactif MeshAgent : ' + String(msg.error || 'erreur'));
+        });
+        child.on('exit', function (code) {
+            if (done) return;
+            exitTimer = setTimeout(function () {
+                if (done) return;
+                try {
+                    if (fs.existsSync(resultFile)) {
+                        var match = fs.readFileSync(resultFile).toString().match(/RESULT:(\d+)/);
+                        if (match && acceptResponse(match[1])) return;
+                    }
+                } catch (_) {}
+                finish(false, 0, 'dialogue interactif MeshAgent arrêté sans réponse (code ' + code + ')');
+            }, 750);
+        });
+        pollTimer = setInterval(function () {
+            if (done) return;
+            try {
+                if (!fs.existsSync(resultFile)) return;
+                var text = fs.readFileSync(resultFile).toString();
+                var match = text.match(/RESULT:(\d+)/);
+                if (match) acceptResponse(match[1]);
+                else if (text.indexOf('ERROR:') === 0) finish(false, 0, 'dialogue interactif MeshAgent : ' + text.substring(6));
+            } catch (_) {}
+        }, 250);
+        safetyTimer = setTimeout(function () {
+            finish(false, 0, 'dialogue interactif MeshAgent : délai dépassé');
+        }, (timeoutSeconds + 20) * 1000);
+    } catch (e) {
+        finish(false, 0, 'dialogue interactif MeshAgent : ' + e);
+    }
 }
 
 function doDuplicateSessionGuard(args) {
@@ -932,9 +1024,9 @@ function doDuplicateSessionGuard(args) {
         reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', decision: 'deny' });
         return;
     }
-    // L'événement 4624 arrive avant que le bureau WTS soit toujours prêt à
-    // recevoir WTSSendMessage. Attendre l'état Active/Connected évite que le
-    // dialogue soit envoyé trop tôt et disparaisse sans jamais être affiché.
+    // L'inventaire peut voir la session avant que son bureau interactif soit
+    // prêt. Attendre l'état Active/Connected avant de créer le child-container
+    // évite de lancer la fenêtre sur un bureau encore indisponible.
     waitDuplicateSessions(args.username, 80, function (sessions) {
         if (!sessions.length) {
             reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', decision: 'deny' });

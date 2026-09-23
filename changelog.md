@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.14
+
+- Le dialogue Oui/Non est maintenant créé par `child-container` dans un véritable processus de la session utilisateur (`SpawnTypes.USER`). Il accepte donc les clics dans le bureau distant, contrairement à la notification système WTS.
+- La réponse est envoyée par l'IPC MeshAgent et écrite simultanément dans un fichier résultat de secours. Le clic reste exploitable même si le processus graphique se termine avant la livraison IPC.
+
 ## 0.14.13
 
 - Le dialogue automatique utilise désormais directement `WTSSendMessageW` dans la session Windows ciblée. Le résultat Oui/Non est récupéré par le fichier résultat fiabilisé, sans dépendre du conteneur graphique MeshAgent qui restait bloqué jusqu'au timeout.
