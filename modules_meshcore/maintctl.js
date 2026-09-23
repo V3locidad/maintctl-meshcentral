@@ -19,6 +19,7 @@ var duplicateWatcherBuffer = '';
 var duplicateWatcherGeneration = 0;
 var duplicateSnapshotTimer = null;
 var duplicateSnapshotSignature = null;
+var duplicateLegacyWatcherCleanupDone = false;
 var maintctlTempCleanupAt = 0;
 
 function dbg(m) {
@@ -737,12 +738,33 @@ function startDuplicateSessionWatcher(args) {
         try { clearTimeout(duplicateWatcherRestartTimer); } catch (_) {}
         duplicateWatcherRestartTimer = null;
     }
+    // Depuis 0.14.12, MeshCentral demande directement les snapshots WTS.
+    // Le watcher PowerShell Security n'est plus nécessaire et ReadEvent()
+    // reste invalide sur certaines versions de Windows. Arrêter son éventuel
+    // ancien processus évite de remplir maintctl-agent.log en boucle.
     if (duplicateWatcher) {
-        reply({ pluginaction: 'duplicateSessionWatchStatus', dispatchId: args && args.dispatchId, ok: true, running: true });
-        sendDuplicateSessionSnapshot(0);
-        return;
+        var oldWatcher = duplicateWatcher;
+        duplicateWatcher = null;
+        duplicateWatcherGeneration++;
+        try { oldWatcher.kill(); } catch (_) {}
     }
-    spawnDuplicateSessionWatcher();
+    if (!duplicateLegacyWatcherCleanupDone) {
+        duplicateLegacyWatcherCleanupDone = true;
+        try {
+            var cp = require('child_process');
+            var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+            var cleanup = "$self=$PID; Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -like '*maintctl-logon-watch.ps1*' } | ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null }";
+            cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-Command', cleanup]);
+        } catch (e) { dbg('legacy watcher cleanup: ' + e); }
+    }
+    reply({
+        pluginaction: 'duplicateSessionWatchStatus',
+        dispatchId: args && args.dispatchId,
+        ok: true,
+        running: true,
+        source: 'wts-snapshot',
+    });
+    sendDuplicateSessionSnapshot(0);
 }
 
 function stopDuplicateSessionWatcher(args, notify) {
@@ -890,76 +912,18 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 }
 
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
-    var done = false;
-    var safetyTimer = null;
-    var exitTimer = null;
-    var container = null;
-
-    function finish(ok, response, note) {
-        if (done) return;
-        done = true;
-        if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
-        if (exitTimer) { try { clearTimeout(exitTimer); } catch (_) {} }
-        if (container) { try { container.exit2(); } catch (_) {} }
-        container = null;
-        onDone(ok, response || 0, note || '');
-    }
-
-    try {
-        // Le message-box intégré à certaines versions de MeshAgent envoie la
-        // réponse puis termine immédiatement son enfant. L'événement exit peut
-        // alors gagner la course et transformer un vrai clic en erreur
-        // « child exited with code: 0 ». Ce conteneur interactif garde le même
-        // procédé natif MessageBoxW, mais attend 1,5 s après l'envoi du choix.
-        var style = (yesNo ? 4 : 0) + 48 + 256 + 4096 + 65536 + 262144;
-        var title64 = duplicateUtf8Base64(title);
-        var message64 = duplicateUtf8Base64(message);
-        var childScript = ''
-            + 'var parent=require("ScriptContainer");'
-            + 'var GM=require("_GenericMarshal");'
-            + 'var user32=GM.CreateNativeProxy("user32.dll");'
-            + 'user32.CreateMethod("MessageBoxW");'
-            + 'var title=GM.CreateVariable(Buffer.from("' + title64 + '","base64").toString(),{wide:true});'
-            + 'var message=GM.CreateVariable(Buffer.from("' + message64 + '","base64").toString(),{wide:true});'
-            + 'var call=user32.MessageBoxW.async(0,message,title,' + style + ');'
-            + 'call.then(function(r){'
-            + 'var response=(r&&r.Val!=null)?r.Val:0;'
-            + 'parent.send("RESULT:"+response);'
-            + 'setTimeout(function(){process.exit();},1500);'
-            + '},function(e){'
-            + 'parent.send("ERROR:"+String(e||"MessageBoxW"));'
-            + 'setTimeout(function(){process.exit();},1500);'
-            + '});';
-
-        container = require('ScriptContainer').Create({ sessionId: parseInt(sessionId, 10) });
-        container.on('data', function (data) {
-            var text = (data && typeof data.toString === 'function' ? data.toString() : String(data || '')).trim();
-            var match = text.match(/RESULT:(\d+)/);
-            if (match) {
-                var response = parseInt(match[1], 10) || 0;
-                var valid = yesNo ? (response === 6 || response === 7) : response === 1;
-                finish(valid, response, valid ? 'dialogue MeshAgent affiché' : 'réponse Windows inattendue: ' + response);
-                return;
-            }
-            if (text.indexOf('ERROR:') === 0) finish(false, 0, 'dialogue MeshAgent: ' + text.substring(6));
-        });
-        container.on('error', function (e) { finish(false, 0, 'dialogue MeshAgent: ' + e); });
-        container.on('exit', function (code) {
-            if (done) return;
-            // Laisser au canal de données un dernier instant pour livrer la
-            // réponse si exit et data ont été signalés dans le même tour.
-            exitTimer = setTimeout(function () {
-                finish(false, 0, 'dialogue MeshAgent: enfant arrêté sans réponse (code ' + code + ')');
-            }, 750);
-        });
-        container.ExecuteString(childScript);
-
-        safetyTimer = setTimeout(function () {
-            finish(false, 0, 'dialogue MeshAgent: délai dépassé');
-        }, (timeoutSeconds + 15) * 1000);
-    } catch (e) {
-        finish(false, 0, 'dialogue MeshAgent: ' + e);
-    }
+    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
+    var resultFile = tmpRoot + '\\maintctl_guard_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
+    var script = buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds, resultFile);
+    runPowerShell(script, (timeoutSeconds + 20) * 1000, function (ok, response, log, note) {
+        response = parseInt(response, 10) || 0;
+        var valid = yesNo ? (response === 6 || response === 7) : response === 1;
+        var succeeded = !!(ok && valid);
+        var detail = succeeded
+            ? 'dialogue WTS Windows affiché'
+            : ('dialogue WTS Windows impossible : ' + (note || (log || '').slice(-500) || 'réponse ' + response));
+        onDone(succeeded, response, detail);
+    }, resultFile);
 }
 
 function doDuplicateSessionGuard(args) {

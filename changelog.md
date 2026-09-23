@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.13
+
+- Le dialogue automatique utilise désormais directement `WTSSendMessageW` dans la session Windows ciblée. Le résultat Oui/Non est récupéré par le fichier résultat fiabilisé, sans dépendre du conteneur graphique MeshAgent qui restait bloqué jusqu'au timeout.
+- Le watcher PowerShell du journal Security est désactivé : la surveillance WTS forcée de la version 0.14.12 le remplace et l'ancien processus est arrêté pour supprimer les erreurs `ReadEvent` répétées dans le journal agent.
+- L'interface indique maintenant « Surveillance WTS » au lieu de « Journal Windows ».
+
 ## 0.14.12
 
 - MeshCentral interroge maintenant explicitement tous les agents toutes les deux secondes pour obtenir leurs sessions WTS. La détection ne dépend plus du déclenchement d'un timer local dans MeshAgent.
