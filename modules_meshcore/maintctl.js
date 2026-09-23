@@ -900,123 +900,111 @@ function duplicateWtsType(includeLogoff) {
 }
 
 function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeconds, resultFile) {
-    // Ce script est lancé avec SpawnTypes.USER dans la session WTS ciblée.
-    // Le choix est persisté avant la fin du processus : contrairement au canal
-    // IPC de message-box, un exit 0/undefined ne peut plus perdre la réponse.
+    var style = (yesNo ? 4 : 0) + 48 + 65536 + 262144; // Yes/No ou OK, warning, foreground, topmost
     return ''
         + '$ErrorActionPreference = "Stop";'
-        + 'Add-Type -AssemblyName System.Windows.Forms;'
-        + 'Add-Type -AssemblyName System.Drawing;'
-        + '[System.Windows.Forms.Application]::EnableVisualStyles();'
+        + duplicateWtsType(false)
         + '$title = ' + duplicatePsUtf8(title) + ';'
         + '$message = ' + duplicatePsUtf8(message) + ';'
-        + '$owner = New-Object System.Windows.Forms.Form;'
-        + '$owner.ShowInTaskbar = $false;'
-        + '$owner.TopMost = $true;'
-        + '$owner.Opacity = 0;'
-        + '$owner.Size = New-Object System.Drawing.Size(1,1);'
-        + '$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen;'
-        + '$owner.Show();'
-        + '[System.Windows.Forms.Application]::DoEvents();'
-        + (yesNo
-            ? '$choice = [System.Windows.Forms.MessageBox]::Show($owner,$message,$title,[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Warning,[System.Windows.Forms.MessageBoxDefaultButton]::Button2);'
-                + 'if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) { $response = 6 } else { $response = 7 };'
-            : '$choice = [System.Windows.Forms.MessageBox]::Show($owner,$message,$title,[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning,[System.Windows.Forms.MessageBoxDefaultButton]::Button1);'
-                + '$response = 1;')
-        + '$owner.Close();$owner.Dispose();'
-        + '$resultLine = "RESULT:" + $response + ":interactive";'
+        + '$response = 0;'
+        + '$ok = [MaintctlWts]::WTSSendMessageW([IntPtr]::Zero,' + parseInt(sessionId, 10) + ',$title,[Text.Encoding]::Unicode.GetByteCount($title),$message,[Text.Encoding]::Unicode.GetByteCount($message),' + style + ',' + parseInt(timeoutSeconds, 10) + ',[ref]$response,$true);'
+        + '$closed = 0;'
+        + '$resultLine = "RESULT:" + $response + ":closed=" + $closed + ";prompt=" + $(if ($ok) { "ok" } else { "failed" });'
         + (resultFile
             ? '[IO.File]::WriteAllText(' + duplicatePsLiteral(resultFile) + ',$resultLine,[Text.Encoding]::ASCII);'
             : '')
-        + 'Write-Output $resultLine;';
+        + 'Write-Host $resultLine;';
 }
 
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
-    var fs = require('fs');
-    var cp = require('child_process');
-    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
-    var token = Date.now() + '_' + Math.floor(Math.random() * 1e9);
-    var ps1 = tmpRoot + '\\maintctl_guard_' + token + '.ps1';
-    var resultFile = tmpRoot + '\\maintctl_guard_' + token + '.txt';
     var done = false;
     var safetyTimer = null;
-    var pollTimer = null;
-    var exitTimer = null;
-    var child = null;
-    var log = '';
+    var exitGraceTimer = null;
+    var dialog = null;
 
     function finish(ok, response, note) {
         if (done) return;
         done = true;
         if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
-        if (pollTimer) { try { clearInterval(pollTimer); } catch (_) {} }
-        if (exitTimer) { try { clearTimeout(exitTimer); } catch (_) {} }
-        if (child) { try { child.kill(); } catch (_) {} }
-        try { if (fs.existsSync(ps1)) fs.unlinkSync(ps1); } catch (_) {}
-        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
+        if (exitGraceTimer) { try { clearTimeout(exitGraceTimer); } catch (_) {} }
+        if (dialog && typeof dialog.close === 'function') {
+            try { dialog.close(); } catch (_) {}
+        }
         onDone(ok, response || 0, note || '');
     }
 
-    function acceptResult(text) {
-        var match = String(text || '').match(/RESULT:(\d+):interactive/);
-        if (!match) return false;
-        var response = parseInt(match[1], 10) || 0;
+    function acceptResponse(value) {
+        var response = parseInt(value, 10) || 0;
         var valid = yesNo ? (response === 6 || response === 7) : response === 1;
-        if (valid) finish(true, response, 'dialogue interactif affiché dans la session WTS ' + sessionId);
-        else finish(false, 0, 'réponse Windows inattendue : ' + response);
-        return true;
+        if (valid) {
+            finish(true, response, 'dialogue MeshAgent affiché');
+            return true;
+        }
+        return false;
+    }
+
+    function scheduleRealExitFailure(code) {
+        if (done || exitGraceTimer) return;
+        // Une réponse IPC et la fin réelle du processus peuvent arriver dans
+        // le même tour. Le canal message reste prioritaire pendant ce délai.
+        exitGraceTimer = setTimeout(function () {
+            finish(false, 0, 'dialogue MeshAgent: enfant arrêté sans réponse (code ' + code + ')');
+        }, 3000);
     }
 
     try {
         var sid = parseInt(sessionId, 10);
         if (isNaN(sid)) throw new Error('identifiant de session WTS invalide');
-        try { if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile); } catch (_) {}
-        fs.writeFileSync(ps1, buildDuplicateGuardScript(sid, title, message, yesNo, timeoutSeconds, resultFile));
+        // Même composant que la 0.14.6 : c'est celui dont l'affichage est
+        // confirmé sur les postes. Le correctif porte uniquement sur l'ordre
+        // des événements IPC, pas sur la création de la fenêtre.
+        dialog = require('message-box').create(title, message, timeoutSeconds, yesNo ? null : 1, sid);
+        if (!dialog || typeof dialog.then !== 'function') {
+            throw new Error('message-box.create n\'a pas retourné de promesse');
+        }
 
-        var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-        child = cp.execFile(psExe, [
-            '-NoLogo', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass',
-            '-WindowStyle', 'Hidden', '-File', ps1
-        ], {
-            type: cp.SpawnTypes.USER,
-            uid: sid,
-        });
-        dbg('duplicateSessionDialog: PowerShell interactif lancé dans la session WTS ' + sid);
+        if (dialog._ipc) {
+            // child-container émet aussi "exit" sans code lorsqu'il ferme son
+            // serveur de pipe après la connexion de l'enfant. message-box le
+            // prenait pour la fin du dialogue et rejetait immédiatement avec
+            // "child exited with code: undefined", alors que la fenêtre était
+            // encore affichée. Retirer ce listener historique corrige la cause.
+            try { dialog._ipc.removeAllListeners('exit'); } catch (_) {}
+            dialog._ipc.on('message', function (msg) {
+                if (msg && msg.command === 'response') acceptResponse(msg.response);
+            });
+            dialog._ipc.on('exit', function (code) {
+                // undefined = fermeture normale du serveur IPC à la connexion,
+                // pas la fin du processus graphique. Elle doit être ignorée.
+                if (code == null) return;
+                scheduleRealExitFailure(code);
+            });
+        }
 
-        if (child.stdout) child.stdout.on('data', function (data) {
-            log += data.toString();
-            acceptResult(log);
+        dialog.then(function () {
+            acceptResponse(yesNo ? 6 : 1);
+        }, function (reason) {
+            var response = parseInt(reason, 10);
+            if (yesNo && response === 7) {
+                acceptResponse(7);
+                return;
+            }
+            if (/child exited/i.test(String(reason || ''))) {
+                var codeMatch = String(reason || '').match(/code:\s*([^\s]+)/i);
+                var code = codeMatch ? codeMatch[1] : null;
+                if (code == null || code === 'undefined') return;
+                scheduleRealExitFailure(code);
+                return;
+            }
+            finish(false, 0, 'dialogue MeshAgent: ' + String(reason || 'échec inconnu'));
         });
-        if (child.stderr) child.stderr.on('data', function (data) { log += data.toString(); });
-        child.on('error', function (error) {
-            finish(false, 0, 'PowerShell interactif : ' + error);
-        });
-        child.on('exit', function (code) {
-            if (done) return;
-            // Le fichier est écrit juste avant la fin de PowerShell. Attendre
-            // un instant couvre un événement exit livré avant le dernier I/O.
-            exitTimer = setTimeout(function () {
-                if (done) return;
-                try {
-                    if (fs.existsSync(resultFile) && acceptResult(fs.readFileSync(resultFile).toString())) return;
-                } catch (_) {}
-                if (acceptResult(log)) return;
-                finish(false, 0, 'PowerShell interactif terminé sans choix (code ' + code + ') : ' + log.trim().slice(-300));
-            }, 1000);
-        });
-
-        pollTimer = setInterval(function () {
-            if (done) return;
-            try {
-                if (fs.existsSync(resultFile)) acceptResult(fs.readFileSync(resultFile).toString());
-            } catch (e) { dbg('duplicateSessionDialog result file: ' + e); }
-        }, 200);
+        dbg('duplicateSessionDialog: message-box 0.14.6 lancé dans la session WTS ' + sid);
 
         safetyTimer = setTimeout(function () {
-            finish(false, 0, 'dialogue interactif : délai dépassé');
-        }, (timeoutSeconds + 10) * 1000);
+            finish(false, 0, 'dialogue MeshAgent: délai dépassé');
+        }, (timeoutSeconds + 15) * 1000);
     } catch (e) {
-        finish(false, 0, 'dialogue interactif : ' + e);
+        finish(false, 0, 'dialogue MeshAgent: ' + e);
     }
 }
 

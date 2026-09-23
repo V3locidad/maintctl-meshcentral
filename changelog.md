@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.17
+
+- Rétablissement du composant `message-box` de la version 0.14.6, dont l'affichage est fonctionnel sur les postes concernés.
+- Correction ciblée de `child exited with code: undefined` : cet événement correspond à la fermeture normale du serveur de pipe après la connexion de la fenêtre, et non à la fermeture du dialogue. Il est désormais ignoré.
+- La réponse Oui/Non est également lue directement sur le canal IPC. Une vraie fin de processus avec un code défini attend trois secondes la réponse avant d'être considérée comme un échec.
+
 ## 0.14.16
 
 - Retour à une boîte Windows Oui/Non classique, comme dans la version 0.14.6, mais le PowerShell qui l'affiche est maintenant lancé directement dans la session WTS de l'utilisateur avec `SpawnTypes.USER`.
