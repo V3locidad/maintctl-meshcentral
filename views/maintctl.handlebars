@@ -3108,10 +3108,16 @@ refreshAgents().then(function () {
     var watcherState = document.getElementById('multiLoginWatcherState');
     if (settings.enabled) {
       watcherState.style.display = 'inline-block';
-      watcherState.textContent = 'Surveillance WTS : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0) + ' agent(s)';
-      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0) ? '#d4edda' : '#fff3cd';
-      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
-      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
+      var currentAgents = watcher.currentAgentVersionCount || 0;
+      var allCurrent = currentAgents === watcher.online && watcher.online > 0;
+      watcherState.textContent = 'Surveillance WTS : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0)
+        + ' · module ' + (watcher.expectedAgentVersion || '?') + ' : ' + currentAgents + ' / ' + (watcher.online || 0);
+      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0 && allCurrent) ? '#d4edda' : '#fff3cd';
+      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0 && allCurrent) ? '#155724' : '#6b5200';
+      var versionDetails = Object.keys(watcher.agentVersions || {}).map(function (version) {
+        return 'Module ' + version + ' : ' + watcher.agentVersions[version] + ' agent(s)';
+      });
+      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).concat(versionDetails).join('\n');
     } else {
       watcherState.style.display = 'none';
       watcherState.title = '';

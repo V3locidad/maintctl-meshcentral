@@ -11,6 +11,7 @@
 
 "use strict";
 
+var MAINTCTL_AGENT_VERSION = '0.14.20';
 var mesh = null;
 var duplicateWatcher = null;
 var duplicateWatcherEnabled = false;
@@ -20,6 +21,7 @@ var duplicateWatcherGeneration = 0;
 var duplicateSnapshotTimer = null;
 var duplicateSnapshotSignature = null;
 var duplicateLegacyWatcherCleanupDone = false;
+var duplicateGuardPendingResults = {};
 var maintctlTempCleanupAt = 0;
 
 function dbg(m) {
@@ -37,7 +39,7 @@ function dbg(m) {
 }
 
 function reply(payload) {
-    var msg = { action: 'plugin', plugin: 'maintctl' };
+    var msg = { action: 'plugin', plugin: 'maintctl', agentPluginVersion: MAINTCTL_AGENT_VERSION };
     Object.keys(payload).forEach(function (k) { msg[k] = payload[k]; });
     try {
         if (mesh && typeof mesh.SendCommand === 'function') mesh.SendCommand(msg);
@@ -139,6 +141,7 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'duplicateSessionWatchStop':  stopDuplicateSessionWatcher(args, true); return 'duplicateSessionWatchStop done';
             case 'duplicateSessionSnapshotRequest': sendDuplicateSessionSnapshot(0); return 'duplicateSessionSnapshot requested';
             case 'duplicateSessionGuard':  doDuplicateSessionGuard(args); return 'duplicateSessionGuard started';
+            case 'duplicateSessionGuardAck': ackDuplicateSessionGuard(args); return 'duplicateSessionGuard acknowledged';
             case 'duplicateSessionLogoff': doDuplicateSessionLogoff(args); return 'duplicateSessionLogoff started';
             default:
                 // Répond toujours pour que le serveur ne reste pas en attente.
@@ -962,35 +965,14 @@ function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeco
     var safetyTimer = null;
     var exitGraceTimer = null;
     var dialog = null;
+    var nativeReject = null;
 
     function finish(ok, response, note) {
         if (done) return;
         done = true;
         if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
         if (exitGraceTimer) { try { clearTimeout(exitGraceTimer); } catch (_) {} }
-        if (dialog && typeof dialog.close === 'function') {
-            try { dialog.close(); } catch (_) {}
-        }
         onDone(ok, response || 0, note || '');
-    }
-
-    function acceptResponse(value) {
-        var response = parseInt(value, 10) || 0;
-        var valid = yesNo ? (response === 6 || response === 7) : response === 1;
-        if (valid) {
-            finish(true, response, 'dialogue MeshAgent affiché');
-            return true;
-        }
-        return false;
-    }
-
-    function scheduleRealExitFailure(code) {
-        if (done || exitGraceTimer) return;
-        // Une réponse IPC et la fin réelle du processus peuvent arriver dans
-        // le même tour. Le canal message reste prioritaire pendant ce délai.
-        exitGraceTimer = setTimeout(function () {
-            finish(false, 0, 'dialogue MeshAgent: enfant arrêté sans réponse (code ' + code + ')');
-        }, 3000);
     }
 
     try {
@@ -1004,37 +986,35 @@ function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeco
             throw new Error('message-box.create n\'a pas retourné de promesse');
         }
 
-        if (dialog._ipc) {
-            // child-container émet aussi "exit" sans code lorsqu'il ferme son
-            // serveur de pipe après la connexion de l'enfant. message-box le
-            // prenait pour la fin du dialogue et rejetait immédiatement avec
-            // "child exited with code: undefined", alors que la fenêtre était
-            // encore affichée. Retirer ce listener historique corrige la cause.
-            try { dialog._ipc.removeAllListeners('exit'); } catch (_) {}
-            dialog._ipc.on('message', function (msg) {
-                if (msg && msg.command === 'response') acceptResponse(msg.response);
-            });
-            dialog._ipc.on('exit', function (code) {
-                // undefined = fermeture normale du serveur IPC à la connexion,
-                // pas la fin du processus graphique. Elle doit être ignorée.
-                if (code == null) return;
-                scheduleRealExitFailure(code);
-            });
-        }
+        // Conserver intégralement le chemin de réponse natif de message-box.
+        // Retirer ses listeners IPC rendait les clics intermittents selon la
+        // version de child-container. Seul le faux rejet de sortie est filtré.
+        nativeReject = dialog._rej;
+        dialog._rej = function (reason) {
+            if (done) return;
+            var text = String(reason == null ? '' : reason);
+            if (/child exited with code:\s*undefined/i.test(text)) {
+                dbg('duplicateSessionDialog: faux exit undefined ignoré');
+                return;
+            }
+            if (/child exited with code:\s*0/i.test(text)) {
+                if (!exitGraceTimer) {
+                    exitGraceTimer = setTimeout(function () {
+                        if (!done && nativeReject) nativeReject(reason);
+                    }, 3000);
+                }
+                return;
+            }
+            if (exitGraceTimer) { try { clearTimeout(exitGraceTimer); } catch (_) {} exitGraceTimer = null; }
+            nativeReject(reason);
+        };
 
         dialog.then(function () {
-            acceptResponse(yesNo ? 6 : 1);
+            finish(true, yesNo ? 6 : 1, 'dialogue MeshAgent affiché');
         }, function (reason) {
             var response = parseInt(reason, 10);
             if (yesNo && response === 7) {
-                acceptResponse(7);
-                return;
-            }
-            if (/child exited/i.test(String(reason || ''))) {
-                var codeMatch = String(reason || '').match(/code:\s*([^\s]+)/i);
-                var code = codeMatch ? codeMatch[1] : null;
-                if (code == null || code === 'undefined') return;
-                scheduleRealExitFailure(code);
+                finish(true, 7, 'dialogue MeshAgent affiché');
                 return;
             }
             finish(false, 0, 'dialogue MeshAgent: ' + String(reason || 'échec inconnu'));
@@ -1042,11 +1022,41 @@ function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeco
         dbg('duplicateSessionDialog: message-box 0.14.6 lancé dans la session WTS ' + sid);
 
         safetyTimer = setTimeout(function () {
+            try { if (dialog && typeof dialog.close === 'function') dialog.close(); } catch (_) {}
             finish(false, 0, 'dialogue MeshAgent: délai dépassé');
         }, (timeoutSeconds + 15) * 1000);
     } catch (e) {
         finish(false, 0, 'dialogue MeshAgent: ' + e);
     }
+}
+
+function ackDuplicateSessionGuard(args) {
+    var dispatchId = String(args && args.dispatchId || '');
+    var pending = duplicateGuardPendingResults[dispatchId];
+    if (!pending) return;
+    if (pending.timer) { try { clearTimeout(pending.timer); } catch (_) {} }
+    delete duplicateGuardPendingResults[dispatchId];
+    dbg('duplicateSessionGuard: décision confirmée par le serveur, dispatchId=' + dispatchId);
+}
+
+function sendDuplicateSessionGuardResult(payload) {
+    var dispatchId = String(payload && payload.dispatchId || '');
+    if (!dispatchId) { reply(payload); return; }
+    var pending = { payload: payload, attempts: 0, timer: null };
+    duplicateGuardPendingResults[dispatchId] = pending;
+
+    function transmit() {
+        if (duplicateGuardPendingResults[dispatchId] !== pending) return;
+        pending.attempts++;
+        reply(pending.payload);
+        if (pending.attempts >= 30) {
+            delete duplicateGuardPendingResults[dispatchId];
+            dbg('duplicateSessionGuard: décision non confirmée après ' + pending.attempts + ' envois, dispatchId=' + dispatchId);
+            return;
+        }
+        pending.timer = setTimeout(transmit, 2000);
+    }
+    transmit();
 }
 
 function doDuplicateSessionGuard(args) {
@@ -1077,7 +1087,7 @@ function doDuplicateSessionGuard(args) {
             var promptSucceeded = !!ok;
             var accepted = promptMode && promptSucceeded && response === 6; // IDYES
             if (accepted) {
-                reply({
+                sendDuplicateSessionGuardResult({
                     pluginaction: 'duplicateSessionGuardResult',
                     dispatchId: args.dispatchId,
                     ok: true,
@@ -1088,16 +1098,21 @@ function doDuplicateSessionGuard(args) {
                 });
                 return;
             }
-            reply({
-                pluginaction: 'duplicateSessionGuardResult',
-                dispatchId: args.dispatchId,
-                ok: promptSucceeded,
-                decision: 'deny',
-                response: response || 0,
-                localClosed: false,
-                closed: 0,
-                error: promptSucceeded ? null : (note || 'dialogue Windows impossible'),
-                logTail: note || '',
+            // « Non », le mode blocage et l'échec du dialogue ferment la
+            // nouvelle session directement sur ce poste. La sécurité ne
+            // dépend ainsi plus d'un second aller-retour avec le serveur.
+            executeDuplicateLogoff(sessions, args.username, '', 0, function (closedOk, closed, closeLog, closeError) {
+                sendDuplicateSessionGuardResult({
+                    pluginaction: 'duplicateSessionGuardResult',
+                    dispatchId: args.dispatchId,
+                    ok: promptSucceeded && closedOk,
+                    decision: 'deny',
+                    response: response || 0,
+                    localClosed: closedOk,
+                    closed: closed || 0,
+                    error: closedOk ? null : (closeError || note || 'fermeture locale impossible'),
+                    logTail: ((note || '') + '\n' + (closeLog || '')).slice(-1500),
+                });
             });
         });
     }, 250, true);

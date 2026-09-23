@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.20
+
+- Le dialogue conserve désormais tous les gestionnaires IPC natifs de `message-box` ; seuls les faux rejets `child exited with code: undefined/0` sont filtrés sans retirer les listeners qui transmettent les clics.
+- Le choix « Non » et le mode blocage ferment de nouveau la nouvelle session directement depuis le MeshAgent, sans dépendre d’une seconde commande du serveur.
+- Les décisions Oui/Non sont répétées toutes les deux secondes jusqu’à l’accusé de réception du serveur. Une perte ponctuelle du message ne laisse donc plus une demande bloquée ni les connexions suivantes sans popup.
+- Le bandeau de surveillance affiche combien de MeshAgents exécutent réellement le module 0.14.20, afin de repérer immédiatement un agent resté sur une ancienne version.
+
 ## 0.14.19
 
 - Chaque session est maintenant identifiée par le couple `SessionId` et heure native d’ouverture WTS (`LogonTime`) : Windows peut réutiliser un numéro de session après une fermeture, mais pas son heure d’ouverture.

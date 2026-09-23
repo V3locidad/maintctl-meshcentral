@@ -18,6 +18,7 @@ const DEV_TTL_MS = 5 * 60 * 1000; // 5 min de cache
 const EVT_TTL_MS = 5 * 60 * 1000; // 5 min de cache events
 const MULTI_LOGIN_EVENT_MAX = 100;
 const MULTI_LOGIN_SEEN_TTL_MS = 10 * 60 * 1000;
+const MAINTCTL_PLUGIN_VERSION = '0.14.20';
 const MAINT_CONFIG_FILE = path.join(__dirname, 'maintctl-config.json');
 
 const pendingDispatches = {};      // dispatchId -> { kind, runId|nodeId, expires }
@@ -438,6 +439,7 @@ module.exports.maintctl = function (parent) {
     const multiLoginLogoffs = {};     // dispatchId -> fermeture demandée
     const multiLoginEvents = [];
     const multiLoginWatchers = {};    // nodeId -> { running, ok, error, updatedAt }
+    const multiLoginAgentVersions = {}; // nodeId -> version du module chargé dans MeshAgent
     const multiLoginSeenEvents = {};  // nodeId/recordId -> date, anti-doublon
     const multiLoginRecentEnforcements = {}; // nodeId/user/session -> date, anti double coreinfo+4624
     let multiLoginSnapshotPollTimer = null;
@@ -937,6 +939,13 @@ module.exports.maintctl = function (parent) {
                 running: runningWatchers,
                 online: onlineNodeIds.length,
                 errors: watcherErrors.slice(0, 20),
+                expectedAgentVersion: MAINTCTL_PLUGIN_VERSION,
+                currentAgentVersionCount: onlineNodeIds.filter((nodeId) => multiLoginAgentVersions[nodeId] === MAINTCTL_PLUGIN_VERSION).length,
+                agentVersions: onlineNodeIds.reduce((counts, nodeId) => {
+                    const version = multiLoginAgentVersions[nodeId] || 'inconnue';
+                    counts[version] = (counts[version] || 0) + 1;
+                    return counts;
+                }, {}),
             },
         };
     }
@@ -995,6 +1004,9 @@ module.exports.maintctl = function (parent) {
         try {
             if (!command) return;
             const sourceNodeId = agent && agent.dbNodeKey;
+            if (sourceNodeId && command.agentPluginVersion) {
+                multiLoginAgentVersions[sourceNodeId] = String(command.agentPluginVersion);
+            }
 
             if (command.pluginaction === 'duplicateSessionWatchStatus') {
                 if (sourceNodeId) {
@@ -1205,7 +1217,15 @@ module.exports.maintctl = function (parent) {
 
             if (command.pluginaction === 'duplicateSessionGuardResult') {
                 const request = multiLoginRequests[command.dispatchId];
-                if (!request) return;
+                if (!request) {
+                    // La décision a déjà été traitée ; confirmer à nouveau au
+                    // cas où le premier accusé de réception aurait été perdu.
+                    if (sourceNodeId) sendMultiLoginAgent(sourceNodeId, {
+                        pluginaction: 'duplicateSessionGuardAck',
+                        dispatchId: command.dispatchId,
+                    });
+                    return;
+                }
                 delete multiLoginRequests[command.dispatchId];
                 const keepNewSession = request.mode === 'prompt' && command.ok && command.decision === 'replace';
                 if (keepNewSession) {
@@ -1260,6 +1280,10 @@ module.exports.maintctl = function (parent) {
                                 : 'Dialogue Windows impossible ; nouvelle session fermée par sécurité. Détail agent : ' + agentDetails),
                     });
                 }
+                if (sourceNodeId) sendMultiLoginAgent(sourceNodeId, {
+                    pluginaction: 'duplicateSessionGuardAck',
+                    dispatchId: command.dispatchId,
+                });
                 return;
             }
 
