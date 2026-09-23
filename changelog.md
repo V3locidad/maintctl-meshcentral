@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.22
+
+- Retour complet au comportement fonctionnel de la version 0.14.6 pour la détection, le dialogue Oui/Non et les fermetures de session.
+- Seule correction conservée : `child exited with code: undefined` et `child exited with code: 0` ne rejettent plus prématurément la promesse du dialogue. Les gestionnaires natifs de `message-box` restent inchangés et transmettent toujours Oui (`6`) et Non (`7`).
+- Suppression des mécanismes supplémentaires introduits après la 0.14.6 afin de ne plus perturber un flux qui fonctionnait déjà sur ces postes.
+
 ## 0.14.21
 
 - Après un redémarrage du plugin, les snapshots WTS ne sont plus dépendants de l’ordre aléatoire de réponse des postes : une réconciliation compare les `LogonTime` et cible toujours la session la plus récente.

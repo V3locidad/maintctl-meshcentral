@@ -11,17 +11,12 @@
 
 "use strict";
 
-var MAINTCTL_AGENT_VERSION = '0.14.21';
 var mesh = null;
 var duplicateWatcher = null;
 var duplicateWatcherEnabled = false;
 var duplicateWatcherRestartTimer = null;
 var duplicateWatcherBuffer = '';
 var duplicateWatcherGeneration = 0;
-var duplicateSnapshotTimer = null;
-var duplicateSnapshotSignature = null;
-var duplicateLegacyWatcherCleanupDone = false;
-var duplicateGuardPendingResults = {};
 var maintctlTempCleanupAt = 0;
 
 function dbg(m) {
@@ -39,7 +34,7 @@ function dbg(m) {
 }
 
 function reply(payload) {
-    var msg = { action: 'plugin', plugin: 'maintctl', agentPluginVersion: MAINTCTL_AGENT_VERSION };
+    var msg = { action: 'plugin', plugin: 'maintctl' };
     Object.keys(payload).forEach(function (k) { msg[k] = payload[k]; });
     try {
         if (mesh && typeof mesh.SendCommand === 'function') mesh.SendCommand(msg);
@@ -68,7 +63,7 @@ function cleanupMaintctlTempArtifacts(force) {
         // Correspond uniquement aux artefacts temporaires propres au plugin.
         // maintctl-agent.log et maintctl-logon-watch.ps1 sont volontairement
         // exclus : le premier est rotatif, le second alimente le watcher actif.
-        var match = name.match(/^maintctl_(?:guard_|logoff_|delprof_|dd_|evt_|dev_|reg_|drv_)?(\d{12,})(?:_\d+)?\.(?:ps1|txt|json|zip)$/i);
+        var match = name.match(/^maintctl_(?:guard_|delprof_|dd_|evt_|dev_|reg_|drv_)?(\d{12,})(?:_\d+)?\.(?:ps1|txt|json|zip)$/i);
         var fixed = /^maintctl_delprof_(?:out|err)\.txt$/i.test(name);
         if (!match && !fixed) continue;
 
@@ -98,12 +93,7 @@ function consoleaction(args, rights, sessionid, parent) {
     mesh = parent;
     cleanupMaintctlTempArtifacts(false);
     var fnname = args.pluginaction || (args._ && args._[1]);
-    // La requête WTS est volontairement envoyée toutes les deux secondes par
-    // le serveur. Ne pas l'écrire à chaque passage : elle noyait les seules
-    // lignes utiles au diagnostic (affichage, choix et fermeture de session).
-    if (fnname !== 'duplicateSessionSnapshotRequest') {
-        dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
-    }
+    dbg('consoleaction: fnname=' + fnname + ', dispatchId=' + (args && args.dispatchId));
     try {
         switch (fnname) {
             case 'ping':
@@ -139,9 +129,7 @@ function consoleaction(args, rights, sessionid, parent) {
             case 'examStatus':     doExamStatus(args); return 'examStatus started';
             case 'duplicateSessionWatchStart': startDuplicateSessionWatcher(args); return 'duplicateSessionWatchStart started';
             case 'duplicateSessionWatchStop':  stopDuplicateSessionWatcher(args, true); return 'duplicateSessionWatchStop done';
-            case 'duplicateSessionSnapshotRequest': sendDuplicateSessionSnapshot(0); return 'duplicateSessionSnapshot requested';
             case 'duplicateSessionGuard':  doDuplicateSessionGuard(args); return 'duplicateSessionGuard started';
-            case 'duplicateSessionGuardAck': ackDuplicateSessionGuard(args); return 'duplicateSessionGuard acknowledged';
             case 'duplicateSessionLogoff': doDuplicateSessionLogoff(args); return 'duplicateSessionLogoff started';
             default:
                 // Répond toujours pour que le serveur ne reste pas en attente.
@@ -503,14 +491,6 @@ function runPowerShell(script, timeoutMs, onDone, resultFile) {
         // Refaire le parsing sur le journal complet évite de perdre IDYES (6)
         // et de traiter par erreur le choix « Oui » comme un refus.
         parseResultText(log);
-        // Le processus peut signaler 'exit' avant que son dernier bloc stdout
-        // soit livré. Le fichier résultat, écrit avant la fin du script,
-        // constitue alors la source fiable.
-        if (resultFile) {
-            try {
-                if (fs.existsSync(resultFile)) parseResultText(fs.readFileSync(resultFile).toString());
-            } catch (_) {}
-        }
         if (resultPollTimer) { try { clearInterval(resultPollTimer); } catch (_) {} }
         try { fs.unlinkSync(ps1); } catch (_) {}
         if (resultFile) { try { fs.unlinkSync(resultFile); } catch (_) {} }
@@ -545,60 +525,57 @@ function runPowerShell(script, timeoutMs, onDone, resultFile) {
 // --- Détection temps réel des ouvertures/fermetures de session Windows ---
 
 function buildDuplicateWatcherScript() {
-    // Lire le journal dans le runspace principal est volontaire. Avec
-    // Register-ObjectEvent -Action, PowerShell exécute le callback dans un job
-    // et peut garder sa sortie au lieu de la transmettre au stdout capturé par
-    // MeshAgent : le watcher paraît alors actif mais aucun 4624 n'arrive au
-    // serveur. EventLogReader.ReadEvent(timeout) bloque efficacement jusqu'au
-    // prochain événement tout en écrivant directement sur stdout.
+    // EventLogWatcher pousse les nouveaux événements Security sans polling.
     // Le filtre ne conserve que les sessions interactives ; les logons réseau,
     // services et tâches planifiées ne doivent jamais déclencher un blocage.
     return [
         '$ErrorActionPreference = "Stop"',
         '$queryText = "*[System[(EventID=4624 or EventID=4634)]]"',
         '$query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery("Security", [System.Diagnostics.Eventing.Reader.PathType]::LogName, $queryText)',
-        '$reader = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($query)',
-        '$reader.Seek([System.IO.SeekOrigin]::End, 0)',
+        '$watcher = New-Object System.Diagnostics.Eventing.Reader.EventLogWatcher($query)',
+        '$handler = {',
+        '  param($sender, $eventArgs)',
+        '  $record = $null',
+        '  try {',
+        '    if ($eventArgs.EventException) { throw $eventArgs.EventException }',
+        '    $record = $eventArgs.EventRecord',
+        '    if ($null -eq $record) { return }',
+        '    [xml]$xml = $record.ToXml()',
+        '    $fields = @{}',
+        '    foreach ($item in $xml.Event.EventData.Data) {',
+        '      $name = [string]$item.Name',
+        '      if ($name) { $fields[$name] = [string]$item."#text" }',
+        '    }',
+        '    $eventId = [int]$record.Id',
+        '    $logonType = 0',
+        '    [void][int]::TryParse([string]$fields["LogonType"], [ref]$logonType)',
+        '    if (@(2, 10, 11, 12) -notcontains $logonType) { return }',
+        '    $payload = [ordered]@{',
+        '      eventId = $eventId',
+        '      logonType = $logonType',
+        '      username = [string]$fields["TargetUserName"]',
+        '      domain = [string]$fields["TargetDomainName"]',
+        '      logonId = [string]$fields["TargetLogonId"]',
+        '      recordId = [long]$record.RecordId',
+        '      time = $record.TimeCreated.ToUniversalTime().ToString("o")',
+        '    }',
+        '    $json = $payload | ConvertTo-Json -Compress',
+        '    [Console]::Out.WriteLine("MAINTCTL_EVENT:" + $json)',
+        '    [Console]::Out.Flush()',
+        '  } catch {',
+        '    [Console]::Error.WriteLine("maintctl watcher event: " + $_.Exception.Message)',
+        '  } finally {',
+        '    if ($null -ne $record) { $record.Dispose() }',
+        '  }',
+        '}',
+        '$subscription = Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten -Action $handler',
+        '$watcher.Enabled = $true',
         '[Console]::Out.WriteLine("MAINTCTL_READY")',
         '[Console]::Out.Flush()',
-        'try {',
-        '  while ($true) {',
-        '    $record = $null',
-        '    try {',
-        '      $record = $reader.ReadEvent([TimeSpan]::FromSeconds(2))',
-        '      if ($null -eq $record) { continue }',
-        '      [xml]$xml = $record.ToXml()',
-        '      $fields = @{}',
-        '      foreach ($item in $xml.Event.EventData.Data) {',
-        '        $name = [string]$item.Name',
-        '        if ($name) { $fields[$name] = [string]$item."#text" }',
-        '      }',
-        '      $eventId = [int]$record.Id',
-        '      $logonType = 0',
-        '      [void][int]::TryParse([string]$fields["LogonType"], [ref]$logonType)',
-        '      if (@(2, 10, 11, 12) -contains $logonType) {',
-        '        $payload = [ordered]@{',
-        '          eventId = $eventId',
-        '          logonType = $logonType',
-        '          username = [string]$fields["TargetUserName"]',
-        '          domain = [string]$fields["TargetDomainName"]',
-        '          logonId = [string]$fields["TargetLogonId"]',
-        '          recordId = [long]$record.RecordId',
-        '          time = $record.TimeCreated.ToUniversalTime().ToString("o")',
-        '        }',
-        '        $json = $payload | ConvertTo-Json -Compress',
-        '        [Console]::Out.WriteLine("MAINTCTL_EVENT:" + $json)',
-        '        [Console]::Out.Flush()',
-        '      }',
-        '    } catch {',
-        '      [Console]::Error.WriteLine("maintctl watcher event: " + $_.Exception.Message)',
-        '      Start-Sleep -Milliseconds 500',
-        '    } finally {',
-        '      if ($null -ne $record) { $record.Dispose() }',
-        '    }',
-        '  }',
-        '} finally {',
-        '  $reader.Dispose()',
+        'try { while ($true) { Start-Sleep -Seconds 3600 } } finally {',
+        '  $watcher.Enabled = $false',
+        '  Unregister-Event -SubscriptionId $subscription.Id -ErrorAction SilentlyContinue',
+        '  $watcher.Dispose()',
         '}',
     ].join('\r\n');
 }
@@ -607,95 +584,28 @@ function duplicateAllLocalUsers() {
     var out = [];
     var seen = {};
     try {
-        var userSessions = null;
-        try { userSessions = require('user-sessions'); } catch (_) {}
         var sessions = require('kvm-helper').users();
         for (var key in sessions) {
             var session = sessions[key];
             if (!session || session.SessionId == null || !session.Username) continue;
             var account = (session.Domain ? session.Domain + '\\' : '') + session.Username;
             var userKey = duplicateUserKey(account);
-            var sessionId = String(session.SessionId);
-            var logonTime = 0;
-            try {
-                // WTSINFOW se termine par cinq FILETIME : ConnectTime,
-                // DisconnectTime, LastInputTime, LogonTime et CurrentTime.
-                // Une nouvelle authentification possède toujours un nouveau
-                // LogonTime, même lorsque Windows réutilise le SessionId.
-                var info = userSessions && userSessions.getRawSessionAttribute(session.SessionId, userSessions.InfoClass.WTSSessionInfo);
-                if (info && info.length >= 40) {
-                    var pos = info.length - 16;
-                    var low = info.readUInt32LE(pos);
-                    var high = info.readUInt32LE(pos + 4);
-                    var parsed = Math.floor((high * 4294967296 + low) / 10000 - 11644473600000);
-                    if (parsed > 0 && parsed < Date.now() + 86400000) logonTime = parsed;
-                }
-            } catch (_) {}
-            var sessionKey = userKey + '@' + sessionId + '@' + String(logonTime || '');
-            if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[sessionKey]) continue;
-            seen[sessionKey] = true;
-            // Le nom seul ne permet pas de distinguer une session qui vient
-            // d'être rouverte de celle qui vient d'être fermée. L'identifiant
-            // WTS change à chaque nouvelle ouverture de session Windows et
-            // permet au serveur de ne plus rater les reconnexions rapides.
-            out.push({
-                Username: String(session.Username),
-                Domain: String(session.Domain || ''),
-                SessionId: sessionId,
-                LogonTime: logonTime,
-                State: String(session.State || ''),
-            });
+            if (!userKey || userKey.charAt(userKey.length - 1) === '$' || seen[userKey]) continue;
+            seen[userKey] = true;
+            out.push(account);
         }
     } catch (e) { dbg('duplicateAllLocalUsers: ' + e); }
     return out;
 }
 
-function duplicateSnapshotEntrySignature(value) {
-    var account = value;
-    var sessionId = '';
-    var logonTime = '';
-    if (value && typeof value === 'object') {
-        account = (value.Domain ? value.Domain + '\\' : '') + (value.Username || value.UserName || value.username || '');
-        if (value.SessionId != null) sessionId = String(value.SessionId);
-        if (value.LogonTime != null && Number(value.LogonTime) > 0) logonTime = String(Math.floor(Number(value.LogonTime)));
-    }
-    return duplicateUserKey(account) + '@' + sessionId + '@' + logonTime;
-}
-
 function sendDuplicateSessionSnapshot(delay) {
     setTimeout(function () {
-        var users = duplicateAllLocalUsers();
-        duplicateSnapshotSignature = users.map(duplicateSnapshotEntrySignature).sort().join('|');
         reply({
             pluginaction: 'duplicateSessionSnapshot',
-            users: users,
+            users: duplicateAllLocalUsers(),
             time: Date.now(),
         });
     }, Math.max(0, parseInt(delay, 10) || 0));
-}
-
-function startDuplicateSessionSnapshotMonitor() {
-    if (duplicateSnapshotTimer) return;
-    sendDuplicateSessionSnapshot(0);
-    duplicateSnapshotTimer = setInterval(function () {
-        var users = duplicateAllLocalUsers();
-        var signature = users.map(duplicateSnapshotEntrySignature).sort().join('|');
-        if (signature === duplicateSnapshotSignature) return;
-        duplicateSnapshotSignature = signature;
-        reply({
-            pluginaction: 'duplicateSessionSnapshot',
-            users: users,
-            time: Date.now(),
-        });
-    }, 1000);
-}
-
-function stopDuplicateSessionSnapshotMonitor() {
-    if (duplicateSnapshotTimer) {
-        try { clearInterval(duplicateSnapshotTimer); } catch (_) {}
-        duplicateSnapshotTimer = null;
-    }
-    duplicateSnapshotSignature = null;
 }
 
 function handleDuplicateWatcherLine(line) {
@@ -703,7 +613,7 @@ function handleDuplicateWatcherLine(line) {
     if (!line) return;
     if (line === 'MAINTCTL_READY') {
         reply({ pluginaction: 'duplicateSessionWatchStatus', ok: true, running: true });
-        startDuplicateSessionSnapshotMonitor();
+        sendDuplicateSessionSnapshot(0);
         return;
     }
     if (line.indexOf('MAINTCTL_EVENT:') !== 0) return;
@@ -778,47 +688,20 @@ function startDuplicateSessionWatcher(args) {
         return;
     }
     duplicateWatcherEnabled = true;
-    // Le suivi WTS local permet de détecter le poste qui vient réellement
-    // d'ajouter l'utilisateur même si le journal Security rate un événement.
-    // La première photo est seulement un amorçage ; seules les variations
-    // suivantes pourront déclencher la règle côté serveur.
-    startDuplicateSessionSnapshotMonitor();
     if (duplicateWatcherRestartTimer) {
         try { clearTimeout(duplicateWatcherRestartTimer); } catch (_) {}
         duplicateWatcherRestartTimer = null;
     }
-    // Depuis 0.14.12, MeshCentral demande directement les snapshots WTS.
-    // Le watcher PowerShell Security n'est plus nécessaire et ReadEvent()
-    // reste invalide sur certaines versions de Windows. Arrêter son éventuel
-    // ancien processus évite de remplir maintctl-agent.log en boucle.
     if (duplicateWatcher) {
-        var oldWatcher = duplicateWatcher;
-        duplicateWatcher = null;
-        duplicateWatcherGeneration++;
-        try { oldWatcher.kill(); } catch (_) {}
+        reply({ pluginaction: 'duplicateSessionWatchStatus', dispatchId: args && args.dispatchId, ok: true, running: true });
+        sendDuplicateSessionSnapshot(0);
+        return;
     }
-    if (!duplicateLegacyWatcherCleanupDone) {
-        duplicateLegacyWatcherCleanupDone = true;
-        try {
-            var cp = require('child_process');
-            var psExe = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-            var cleanup = "$self=$PID; Get-CimInstance Win32_Process -Filter \"Name = 'powershell.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -like '*maintctl-logon-watch.ps1*' } | ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate -ErrorAction SilentlyContinue | Out-Null }";
-            cp.execFile(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-NonInteractive', '-Command', cleanup]);
-        } catch (e) { dbg('legacy watcher cleanup: ' + e); }
-    }
-    reply({
-        pluginaction: 'duplicateSessionWatchStatus',
-        dispatchId: args && args.dispatchId,
-        ok: true,
-        running: true,
-        source: 'wts-snapshot',
-    });
-    sendDuplicateSessionSnapshot(0);
+    spawnDuplicateSessionWatcher();
 }
 
 function stopDuplicateSessionWatcher(args, notify) {
     duplicateWatcherEnabled = false;
-    stopDuplicateSessionSnapshotMonitor();
     duplicateWatcherGeneration++;
     if (duplicateWatcherRestartTimer) {
         try { clearTimeout(duplicateWatcherRestartTimer); } catch (_) {}
@@ -963,64 +846,60 @@ function buildDuplicateGuardScript(sessionId, title, message, yesNo, timeoutSeco
 function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeconds, onDone) {
     var done = false;
     var safetyTimer = null;
-    var exitGraceTimer = null;
-    var dialog = null;
-    var nativeReject = null;
 
     function finish(ok, response, note) {
         if (done) return;
         done = true;
         if (safetyTimer) { try { clearTimeout(safetyTimer); } catch (_) {} }
-        if (exitGraceTimer) { try { clearTimeout(exitGraceTimer); } catch (_) {} }
         onDone(ok, response || 0, note || '');
     }
 
     try {
-        var sid = parseInt(sessionId, 10);
-        if (isNaN(sid)) throw new Error('identifiant de session WTS invalide');
-        // Même composant que la 0.14.6 : c'est celui dont l'affichage est
-        // confirmé sur les postes. Le correctif porte uniquement sur l'ordre
-        // des événements IPC, pas sur la création de la fenêtre.
-        dialog = require('message-box').create(title, message, timeoutSeconds, yesNo ? null : 1, sid);
+        // Le module natif de MeshAgent crée la fenêtre dans la session Windows
+        // désignée (child-container avec uid=sessionId). Contrairement à un
+        // PowerShell lancé par le service, la boîte appartient donc réellement
+        // au bureau interactif de l'utilisateur.
+        var dialog = require('message-box').create(
+            title,
+            message,
+            timeoutSeconds,
+            yesNo ? null : 1,
+            parseInt(sessionId, 10)
+        );
         if (!dialog || typeof dialog.then !== 'function') {
             throw new Error('message-box.create n\'a pas retourné de promesse');
         }
 
-        // Conserver intégralement le chemin de réponse natif de message-box.
-        // Retirer ses listeners IPC rendait les clics intermittents selon la
-        // version de child-container. Seul le faux rejet de sortie est filtré.
-        nativeReject = dialog._rej;
+        // Correctif volontairement limité au bug observé dans message-box.
+        // child-container peut annoncer sa propre fin (undefined ou 0) avant
+        // que le message contenant IDYES/IDNO soit livré. Le gestionnaire
+        // natif reste entièrement en place : on ignore seulement ces deux
+        // faux rejets, puis Oui et Non continuent à suivre le chemin 0.14.6.
+        var nativeReject = dialog._rej;
         dialog._rej = function (reason) {
-            if (done) return;
-            var text = String(reason == null ? '' : reason);
-            if (/child exited with code:\s*undefined/i.test(text)) {
-                dbg('duplicateSessionDialog: faux exit undefined ignoré');
+            if (/^child exited with code:\s*(?:undefined|0)$/i.test(String(reason || ''))) {
+                dbg('duplicateSessionDialog: faux exit ignoré: ' + String(reason));
                 return;
             }
-            if (/child exited with code:\s*0/i.test(text)) {
-                if (!exitGraceTimer) {
-                    exitGraceTimer = setTimeout(function () {
-                        if (!done && nativeReject) nativeReject(reason);
-                    }, 3000);
-                }
-                return;
-            }
-            if (exitGraceTimer) { try { clearTimeout(exitGraceTimer); } catch (_) {} exitGraceTimer = null; }
             nativeReject(reason);
         };
 
         dialog.then(function () {
+            // message-box résout la promesse pour Oui (IDYES=6) ou OK (IDOK=1).
             finish(true, yesNo ? 6 : 1, 'dialogue MeshAgent affiché');
         }, function (reason) {
             var response = parseInt(reason, 10);
+            // Pour une boîte Oui/Non, le module rejette volontairement avec
+            // IDNO=7. Ce n'est pas une erreur d'affichage mais le choix Non.
             if (yesNo && response === 7) {
                 finish(true, 7, 'dialogue MeshAgent affiché');
                 return;
             }
             finish(false, 0, 'dialogue MeshAgent: ' + String(reason || 'échec inconnu'));
         });
-        dbg('duplicateSessionDialog: message-box 0.14.6 lancé dans la session WTS ' + sid);
 
+        // Le délai interne commence lorsque le child-container est prêt. Ce
+        // filet couvre aussi un enfant qui ne parviendrait jamais à cet état.
         safetyTimer = setTimeout(function () {
             try { if (dialog && typeof dialog.close === 'function') dialog.close(); } catch (_) {}
             finish(false, 0, 'dialogue MeshAgent: délai dépassé');
@@ -1030,44 +909,15 @@ function runDuplicateSessionDialog(sessionId, title, message, yesNo, timeoutSeco
     }
 }
 
-function ackDuplicateSessionGuard(args) {
-    var dispatchId = String(args && args.dispatchId || '');
-    var pending = duplicateGuardPendingResults[dispatchId];
-    if (!pending) return;
-    if (pending.timer) { try { clearTimeout(pending.timer); } catch (_) {} }
-    delete duplicateGuardPendingResults[dispatchId];
-    dbg('duplicateSessionGuard: décision confirmée par le serveur, dispatchId=' + dispatchId);
-}
-
-function sendDuplicateSessionGuardResult(payload) {
-    var dispatchId = String(payload && payload.dispatchId || '');
-    if (!dispatchId) { reply(payload); return; }
-    var pending = { payload: payload, attempts: 0, timer: null };
-    duplicateGuardPendingResults[dispatchId] = pending;
-
-    function transmit() {
-        if (duplicateGuardPendingResults[dispatchId] !== pending) return;
-        pending.attempts++;
-        reply(pending.payload);
-        if (pending.attempts >= 30) {
-            delete duplicateGuardPendingResults[dispatchId];
-            dbg('duplicateSessionGuard: décision non confirmée après ' + pending.attempts + ' envois, dispatchId=' + dispatchId);
-            return;
-        }
-        pending.timer = setTimeout(transmit, 2000);
-    }
-    transmit();
-}
-
 function doDuplicateSessionGuard(args) {
     dbg('duplicateSessionGuard: mode=' + String(args && args.mode) + ', user=' + String(args && args.username) + ', dispatchId=' + String(args && args.dispatchId));
     if (process.platform !== 'win32') {
         reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'Windows only', decision: 'deny' });
         return;
     }
-    // L'inventaire peut voir la session avant que son bureau interactif soit
-    // prêt. Attendre l'état Active/Connected avant de créer le child-container
-    // évite de lancer la fenêtre sur un bureau encore indisponible.
+    // L'événement 4624 arrive avant que le bureau WTS soit toujours prêt à
+    // recevoir WTSSendMessage. Attendre l'état Active/Connected évite que le
+    // dialogue soit envoyé trop tôt et disparaisse sans jamais être affiché.
     waitDuplicateSessions(args.username, 80, function (sessions) {
         if (!sessions.length) {
             reply({ pluginaction: 'duplicateSessionGuardResult', dispatchId: args.dispatchId, ok: false, error: 'session Windows introuvable', decision: 'deny' });
@@ -1087,7 +937,7 @@ function doDuplicateSessionGuard(args) {
             var promptSucceeded = !!ok;
             var accepted = promptMode && promptSucceeded && response === 6; // IDYES
             if (accepted) {
-                sendDuplicateSessionGuardResult({
+                reply({
                     pluginaction: 'duplicateSessionGuardResult',
                     dispatchId: args.dispatchId,
                     ok: true,
@@ -1098,27 +948,22 @@ function doDuplicateSessionGuard(args) {
                 });
                 return;
             }
-            // « Non », le mode blocage et l'échec du dialogue ferment la
-            // nouvelle session directement sur ce poste. La sécurité ne
-            // dépend ainsi plus d'un second aller-retour avec le serveur.
-            executeDuplicateLogoff(sessions, args.username, '', 0, function (closedOk, closed, closeLog, closeError) {
-                sendDuplicateSessionGuardResult({
-                    pluginaction: 'duplicateSessionGuardResult',
-                    dispatchId: args.dispatchId,
-                    ok: promptSucceeded && closedOk,
-                    decision: 'deny',
-                    response: response || 0,
-                    localClosed: closedOk,
-                    closed: closed || 0,
-                    error: closedOk ? null : (closeError || note || 'fermeture locale impossible'),
-                    logTail: ((note || '') + '\n' + (closeLog || '')).slice(-1500),
-                });
+            reply({
+                pluginaction: 'duplicateSessionGuardResult',
+                dispatchId: args.dispatchId,
+                ok: promptSucceeded,
+                decision: 'deny',
+                response: response || 0,
+                localClosed: false,
+                closed: 0,
+                error: promptSucceeded ? null : (note || 'dialogue Windows impossible'),
+                logTail: note || '',
             });
         });
     }, 250, true);
 }
 
-function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds, resultFile) {
+function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds) {
     var ids = sessionIds.map(function (id) { return parseInt(id, 10); }).filter(function (id) { return !isNaN(id); });
     return ''
         + '$ErrorActionPreference = "Stop";'
@@ -1144,43 +989,19 @@ function buildDuplicateLogoffScript(sessionIds, title, message, warningSeconds, 
         + '  $done = $wtsDone -or $cliDone -or $resetDone;'
         + '  if ($done) { $closed++ }'
         + '}'
-        + '$resultLine = "RESULT:" + $closed + ":logoff";'
-        + (resultFile
-            ? '[IO.File]::WriteAllText(' + duplicatePsLiteral(resultFile) + ',$resultLine,[Text.Encoding]::ASCII);'
-            : '')
-        + 'Write-Host $resultLine;';
+        + 'Write-Host ("RESULT:" + $closed + ":logoff");';
 }
 
-function waitDuplicateSessionClosed(username, attempts, callback) {
-    var remaining = duplicateLocalSessions(username);
-    if (!remaining.length || attempts <= 0) return callback(remaining);
-    setTimeout(function () { waitDuplicateSessionClosed(username, attempts - 1, callback); }, 250);
-}
-
-function executeDuplicateLogoff(sessions, username, message, warning, callback) {
-    var tmpRoot = (process.env.TEMP || process.env.TMP || 'C:\\Windows\\Temp');
-    var resultFile = tmpRoot + '\\maintctl_logoff_' + Date.now() + '_' + Math.floor(Math.random() * 1e9) + '.txt';
+function executeDuplicateLogoff(sessions, message, warning, callback) {
     var script = buildDuplicateLogoffScript(
         sessions.map(function (session) { return session.id; }),
         'Fermeture de session',
         message || 'Cette session Windows va être fermée.',
-        warning,
-        resultFile
+        warning
     );
     runPowerShell(script, (30 + warning * sessions.length) * 1000, function (ok, closed, log, note) {
-        // Ne pas se fier uniquement au code de retour : la fermeture WTS peut
-        // être asynchrone. On confirme que la session a vraiment disparu.
-        waitDuplicateSessionClosed(username, 20, function (remaining) {
-            var verified = remaining.length === 0;
-            var error = null;
-            if (!verified) {
-                error = (note || 'la session Windows est toujours présente')
-                    + ' (ID restant(s) : ' + remaining.map(function (session) { return session.id; }).join(', ') + ')';
-            }
-            dbg('duplicateSessionLogoff: user=' + username + ', commandOk=' + ok + ', closed=' + closed + ', verified=' + verified + (error ? ', error=' + error : ''));
-            callback(verified, verified ? Math.max(closed || 0, sessions.length) : (closed || 0), log || '', error);
-        });
-    }, resultFile);
+        callback(!!(ok && closed > 0), closed || 0, log || '', closed > 0 ? null : (note || 'WTSLogoffSession et logoff.exe ont échoué'));
+    });
 }
 
 function doDuplicateSessionLogoff(args) {
@@ -1194,7 +1015,7 @@ function doDuplicateSessionLogoff(args) {
             return;
         }
         var warning = Math.max(0, Math.min(30, parseInt(args.warningSeconds, 10) || 0));
-        executeDuplicateLogoff(sessions, args.username, args.message || 'Cette session Windows va être fermée.', warning, function (ok, closed, log, error) {
+        executeDuplicateLogoff(sessions, args.message || 'Cette session Windows va être fermée.', warning, function (ok, closed, log, error) {
             reply({
                 pluginaction: 'duplicateSessionLogoffResult',
                 dispatchId: args.dispatchId,

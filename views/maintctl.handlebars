@@ -581,7 +581,7 @@
       <label style="flex:1;min-width:320px">Comptes exclus : <input id="multiLoginExcluded" type="text" style="width:70%" placeholder="administrator, administrateur, admin, maintenance"></label>
     </div>
     <div style="margin-top:10px;padding:8px;background:#fff3cd;color:#6b5200;font-size:11px;border-radius:3px">
-      Les sessions Windows WTS sont interrogées automatiquement toutes les deux secondes. Le contrôle intervient dès que le compte apparaît sur un nouveau poste. L’authentification a toutefois déjà réussi : ce mécanisme ferme la session, il ne remplace pas un Credential Provider Windows. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
+      Le journal de sécurité Windows est surveillé en temps réel. En mode refus, la nouvelle session est fermée dès l’événement 4624, normalement pendant l’écran « Bienvenue ». L’authentification a toutefois déjà réussi : ce mécanisme ferme immédiatement la session, il ne remplace pas un Credential Provider Windows. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
     </div>
   </div>
 
@@ -3108,16 +3108,10 @@ refreshAgents().then(function () {
     var watcherState = document.getElementById('multiLoginWatcherState');
     if (settings.enabled) {
       watcherState.style.display = 'inline-block';
-      var currentAgents = watcher.currentAgentVersionCount || 0;
-      var allCurrent = currentAgents === watcher.online && watcher.online > 0;
-      watcherState.textContent = 'Surveillance WTS : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0)
-        + ' · module ' + (watcher.expectedAgentVersion || '?') + ' : ' + currentAgents + ' / ' + (watcher.online || 0);
-      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0 && allCurrent) ? '#d4edda' : '#fff3cd';
-      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0 && allCurrent) ? '#155724' : '#6b5200';
-      var versionDetails = Object.keys(watcher.agentVersions || {}).map(function (version) {
-        return 'Module ' + version + ' : ' + watcher.agentVersions[version] + ' agent(s)';
-      });
-      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).concat(versionDetails).join('\n');
+      watcherState.textContent = 'Journal Windows : ' + (watcher.running || 0) + ' / ' + (watcher.online || 0) + ' agent(s)';
+      watcherState.style.background = (watcher.running === watcher.online && watcher.online > 0) ? '#d4edda' : '#fff3cd';
+      watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
+      watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
     } else {
       watcherState.style.display = 'none';
       watcherState.title = '';
@@ -3127,15 +3121,11 @@ refreshAgents().then(function () {
     var conflictCount = document.getElementById('multiLoginConflictCount');
     conflictCount.style.display = conflicts.length ? 'inline-block' : 'none';
     conflictCount.textContent = conflicts.length + ' conflit(s)';
-    var conflictActionLabel = settings.mode === 'prompt' ? 'Afficher la demande ici' : 'Fermer cette session';
     document.getElementById('multiLoginConflicts').innerHTML = conflicts.length
       ? conflicts.map(function (conflict) {
           return '<div class="multiLoginConflict"><b>' + escapeHtml(conflict.username) + '</b><br>'
             + conflict.sessions.map(function (session) {
-                return '<span style="display:inline-flex;align-items:center;gap:8px;margin:2px 0">'
-                  + escapeHtml(session.mesh + ' — ' + session.name)
-                  + '<button type="button" class="multiLoginEnforceBtn" data-node="' + escapeHtml(encodeURIComponent(session.nodeId || ''))
-                  + '" data-user="' + escapeHtml(encodeURIComponent(session.userKey || '')) + '">' + escapeHtml(conflictActionLabel) + '</button></span>';
+                return escapeHtml(session.mesh + ' — ' + session.name);
               }).join('<br>') + '</div>';
         }).join('')
       : '<div class="empty">Aucun conflit actuellement détecté.</div>';
@@ -3190,23 +3180,6 @@ refreshAgents().then(function () {
   if (tab) tab.addEventListener('click', function () { loadMultiLogin(); });
   document.getElementById('multiLoginRefreshBtn').addEventListener('click', function () { editing = false; loadMultiLogin(); });
   document.getElementById('multiLoginSaveBtn').addEventListener('click', saveMultiLogin);
-  document.getElementById('multiLoginConflicts').addEventListener('click', function (event) {
-    var button = event.target && event.target.closest ? event.target.closest('.multiLoginEnforceBtn') : null;
-    if (!button) return;
-    button.disabled = true;
-    button.textContent = 'Envoi…';
-    var nodeId = decodeURIComponent(button.getAttribute('data-node') || '');
-    var userKey = decodeURIComponent(button.getAttribute('data-user') || '');
-    getJson(BASE + '&action=multiLoginEnforce&nodeId=' + encodeURIComponent(nodeId) + '&userKey=' + encodeURIComponent(userKey)).then(function (result) {
-      if (!result.ok) throw new Error(result.error || 'envoi impossible');
-      button.textContent = 'Demande envoyée';
-      setTimeout(loadMultiLogin, 1200);
-    }).catch(function (error) {
-      button.disabled = false;
-      button.textContent = selectedMultiLoginMode() === 'prompt' ? 'Afficher la demande ici' : 'Fermer cette session';
-      alert('Erreur : ' + error.message);
-    });
-  });
   ['multiLoginEnabled', 'multiLoginTimeout', 'multiLoginExcluded'].forEach(function (id) {
     document.getElementById(id).addEventListener('change', function () { editing = true; updateMultiLoginInputs(); });
   });
