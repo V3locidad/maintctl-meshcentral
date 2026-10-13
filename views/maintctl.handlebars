@@ -1,7 +1,8 @@
 <!doctype html>
-<html>
+<html lang="fr">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Maintenance Control</title>
 <style>
   html, body { height: 100%; margin: 0; }
@@ -239,25 +240,131 @@
   #panel-sessions.active { display:block; overflow-y:auto; overflow-x:hidden; padding-right:2px; }
   #panel-sessions > .bar { position:sticky; top:0; z-index:5; }
   #panel-sessions .multiLoginCard { min-height:auto; overflow:visible; }
+  /* Unified maintenance workspace. */
+  :root { color-scheme:light; --ink:#1c2b40; --muted:#64748b; --line:#dfe6ee; --blue:#205dcc; --soft:#edf4ff; }
+  * { box-sizing:border-box; }
+  body { padding:18px; background:#f4f7fb; color:var(--ink); font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:640px; overflow-anchor:none; }
+  button,input,select,textarea { font:inherit; }
+  button { min-height:32px; border:1px solid #cbd6e3; border-radius:6px; color:var(--ink); font-weight:550; }
+  button:hover { border-color:#98b4dc; background:#f3f7fc; }
+  button.primary { background:var(--blue); border-color:var(--blue); }
+  :focus-visible { outline:3px solid #80abfa; outline-offset:2px; }
+  input[type=text],input[type=search],input[type=number],select,.bar input[type=text],.bar input[type=number],.bar select,.col .search input { padding:7px 9px; border:1px solid #cbd6e3; border-radius:6px; min-height:33px; color:var(--ink); background:#fff; }
+  input[type=checkbox],input[type=radio] { accent-color:var(--blue); }
+  .app-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex:0 0 auto; margin-bottom:17px; }
+  .brand { display:flex; gap:12px; align-items:center; }
+  .brand-mark { width:40px; height:40px; border-radius:10px; background:var(--blue); color:white; display:grid; place-items:center; flex-shrink:0; }
+  .brand-mark svg { width:24px; height:24px; }
+  .app-head h1 { margin:0; font-size:21px; letter-spacing:-.5px; }
+  .app-head p { margin:1px 0 0; color:var(--muted); font-size:12px; }
+  .workspace-state { text-align:right; font-size:12px; color:var(--muted); }
+  .workspace-state span { display:block; }
+  .workspace-state strong { color:var(--ink); font-weight:600; }
+  .tabs { gap:5px; padding:5px; border:1px solid var(--line); border-radius:9px; background:#fff; margin-bottom:16px; flex-wrap:wrap; }
+  .tab { border:0; border-radius:6px; padding:9px 15px; color:#536781; font-size:12px; }
+  .tab.active { border:0; margin:0; background:var(--soft); color:var(--blue); }
+  .section-intro { flex:0 0 auto; margin:0 0 12px; display:flex; justify-content:space-between; align-items:end; gap:12px; }
+  .section-intro h2 { font-size:17px; margin:0 0 2px; }
+  .section-intro p { color:var(--muted); font-size:12px; margin:0; }
+  .bar { background:#fff; border-color:var(--line); border-radius:9px; padding:10px 12px; gap:10px; }
+  .col,.devTree,.results,#evtList,.multiLoginCard,#panel-registry .regMain { border-color:var(--line); border-radius:9px; background:#fff; }
+  .col h3 { padding:12px; background:#f9fbfd; border-color:var(--line); font-size:12px; }
+  .col h3 button { font-size:11px; padding:3px 8px; min-height:28px; }
+  .col .search { padding:10px 12px; }
+  .col.tasks { flex-basis:320px; }
+  .row { padding:10px 12px; border-color:#edf1f6; }
+  .row:hover { background:#f7faff; }
+  .row.selected { background:var(--soft); box-shadow:inset 3px 0 var(--blue); }
+  .row .main .title { font-weight:600; }
+  .row .main .sub { margin-top:4px; }
+  .badge,.pill { border-radius:5px; background:#eef2f6; color:#596d84; }
+  .statusDot { width:8px; height:8px; box-shadow:none; }
+  .statusDot.on { background:#26835b; } .statusDot.off { background:#a4afbd; }
+  .taskGroup { gap:0; padding:0 14px; }
+  .taskGroup > label { padding:14px 0; border-bottom:1px solid #edf1f6; }
+  .taskGroup label .desc { margin-top:4px; color:var(--muted); }
+  .results th,.results td,.multiLoginTable th,.multiLoginTable td,.evtTable th,.evtTable td { padding:9px 11px; }
+  .results th,.multiLoginTable th,.evtTable th { background:#f9fbfd; color:var(--muted); font-size:11px; }
+  .empty,.regEmpty { color:var(--muted); font-style:normal; padding:22px; }
+  .health-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; background:transparent; padding:0; border:0; margin-bottom:12px; flex:0 0 auto; }
+  .health-stats .stat { display:flex; flex-direction:column; padding:12px 16px; border:1px solid var(--line); border-radius:9px; background:#fff; color:var(--muted); font-size:12px; }
+  .health-stats .stat b { font-size:27px; line-height:1.3; color:var(--ink); margin:0 0 3px; }
+  .health-stats .stat.crit b { color:#b33b50; } .health-stats .stat.warn b { color:#9b6512; }
+  #healthThresholds { display:block; margin:0 0 10px; color:var(--muted); font-size:11px; flex:0 0 auto; }
+  #healthSearch { flex:1 1 180px; min-width:140px; }
+  #healthRoom { max-width:230px; }
+  #healthLastUpdate { min-width:145px; }
+  .healthAlerts { border-radius:9px; border-color:#ecd8dd; }
+  .healthAlerts .head { padding:8px 12px; background:#fff7f8; }
+  .healthAlerts .body { height:calc(100% - 35px); }
+  .healthAlerts th,.healthAlerts td { padding:8px 12px; }
+  .healthAlerts .pcName { white-space:nowrap; }
+  #panel-health.active { display:block; overflow:auto; }
+  #healthGroups { min-height:0; }
+  #evtList { flex:1 1 auto; min-height:0; overflow:auto; }
+  .healthGrid { grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:10px; }
+  .salleGroup h4 { background:transparent; padding:8px 1px; font-size:13px; color:#43566f; }
+  .pcCard { border-color:var(--line); border-radius:8px; padding:12px; }
+  .pcCard .metric { padding:3px 0; font-size:11px; }
+  .pcCard .name { margin-bottom:8px; }
+  .diskBar { margin-bottom:5px; }
+  .multiLoginCard { padding:16px; margin-bottom:12px; }
+  .multiLoginCard h3 { font-size:13px; }
+  .multiLoginConflict { border-radius:6px; padding:11px 13px; }
+  #multiLoginEvents,#multiLoginConflictHistory { max-height:360px; overflow:auto; }
+  #multiLoginSearch { flex:1 1 200px; }
+  #multiLoginEditState { color:#9b6512; font-size:11px; }
+  #multiLoginResetBtn { font-size:11px; }
+  .rule-notice { color:#64748b; background:#f5f8fc; border-radius:6px; padding:10px; margin-top:12px; font-size:11px; }
+  .modal { min-width:0; width:min(720px,calc(100vw - 32px)); border-radius:10px; padding:20px; }
+  #panel-registry #regAgents { background:#f9fbfd; }
+  #panel-registry #regToolbar { background:#f9fbfd; }
+  @media(max-width:900px) { .col.tasks { flex-basis:285px; } .tabs { gap:2px; } .tab { padding:8px 10px; } .col h3 { flex-wrap:wrap; } }
+  @media(max-width:650px) {
+    body { padding:10px; height:auto; min-height:100vh; }
+    .app-head { align-items:start; flex-direction:column; gap:8px; }
+    .workspace-state { text-align:left; display:flex; flex-wrap:wrap; gap:2px 8px; }
+    .workspace-state span { display:inline; margin-right:8px; }
+    .tabs { margin-bottom:12px; } .tab { flex:1 0 30%; }
+    .panel.active { min-height:450px; }
+    .cols { flex-direction:column; flex:none; }
+    .col { min-height:300px; flex:none; } .col.tasks { flex:auto; min-height:0; }
+    .col .body { max-height:430px; }
+    .health-stats { gap:7px; } .health-stats .stat { padding:10px; font-size:11px; } .health-stats .stat b { font-size:23px; }
+    #panel-health.active { overflow:visible; }
+    .bar select,.bar input[type=text] { min-width:0 !important; max-width:100%; }
+    .bar label { max-width:100%; }
+    #panel-sessions.active { overflow:visible; }
+    #panel-sessions > .bar { position:static; }
+    .multiLoginCard { overflow:auto !important; }
+    .multiLoginCard label { min-width:0 !important; }
+    #panel-registry .regMain { flex:none; min-height:500px; overflow:auto; }
+    #panel-registry #regAgents { width:220px; flex:none; } #panel-registry #regTree { width:240px; flex:none; } #panel-registry #regValues { min-width:300px; }
+    .regModalBg .regModal { min-width:0; width:calc(100vw - 24px); }
+    .results,.devTree,#evtList { max-height:550px; min-height:180px; overflow:auto; }
+  }
+
 </style>
 </head>
 <body>
 
-<h2>Maintenance Control</h2>
-
-<div class="tabs">
-  <div class="tab active" data-tab="clean">Nettoyage</div>
-  <div class="tab" data-tab="devices">Périphériques</div>
-  <div class="tab" data-tab="drivers">Drivers</div>
-  <div class="tab" data-tab="events">Événements</div>
-  <div class="tab" data-tab="health">Santé <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></div>
-  <div class="tab" data-tab="registry">Registre</div>
-  <div class="tab" data-tab="exam">Examen <span id="examLockedBadge" class="alertBadge" style="display:none">0</span></div>
-  <div class="tab" data-tab="sessions">Connexions</div>
-</div>
+<header class="app-head">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 4h18v13H3zM8 21h8M12 17v4M6 10h3l2-3 3 6 2-3h2"/></svg></span><div><h1>Maintenance Control</h1><p>Suivre le parc Windows et intervenir sur les postes.</p></div></div>
+  <div class="workspace-state"><strong id="fleetSummary">Chargement du parc…</strong><span id="fleetStatus">Inventaire MeshCentral</span></div>
+</header>
+<nav class="tabs" role="tablist" aria-label="Outils de maintenance">
+  <button class="tab active" id="tab-health" data-tab="health" role="tab" aria-controls="panel-health" aria-selected="true" tabindex="0">Santé du parc <span id="healthAlertBadge" class="alertBadge" style="display:none">0</span></button>
+  <button class="tab" id="tab-clean" data-tab="clean" role="tab" aria-controls="panel-clean" aria-selected="false" tabindex="-1">Nettoyage</button>
+  <button class="tab" id="tab-devices" data-tab="devices" role="tab" aria-controls="panel-devices" aria-selected="false" tabindex="-1">Périphériques</button>
+  <button class="tab" id="tab-drivers" data-tab="drivers" role="tab" aria-controls="panel-drivers" aria-selected="false" tabindex="-1">Pilotes</button>
+  <button class="tab" id="tab-events" data-tab="events" role="tab" aria-controls="panel-events" aria-selected="false" tabindex="-1">Événements</button>
+  <button class="tab" id="tab-registry" data-tab="registry" role="tab" aria-controls="panel-registry" aria-selected="false" tabindex="-1">Registre</button>
+  <button class="tab" id="tab-sessions" data-tab="sessions" role="tab" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">Connexions</button>
+</nav>
 
 <!-- ============ TAB NETTOYAGE ============ -->
-<div id="panel-clean" class="panel active">
+<div id="panel-clean" class="panel" role="tabpanel" aria-labelledby="tab-clean">
+  <div class="section-intro"><div><h2>Nettoyer les postes</h2><p>Sélectionnez les postes et les tâches à exécuter.</p></div></div>
   <div class="bar">
     <button id="refreshBtn">Rafraîchir</button>
     <span id="selCount" class="pill">0 poste(s) sélectionné(s)</span>
@@ -271,24 +378,24 @@
         <label style="font-weight:normal; font-size:11px">
           <input type="checkbox" id="onlineOnly" checked> en ligne uniquement
         </label>
-        <button id="selectAllBtn">Tout</button>
+        <button id="selectAllBtn">Cocher la liste</button>
         <button id="selectNoneBtn">Aucun</button>
       </h3>
-      <div class="search"><input id="searchAgents" placeholder="Rechercher (nom, salle, OS)"></div>
+      <div class="search"><input id="searchAgents" placeholder="Rechercher (nom, salle, OS, modèle)"></div>
       <div class="body" id="agentsBody"><div class="empty">Chargement…</div></div>
     </div>
 
     <div class="col tasks">
-      <h3>Tâches</h3>
+      <h3>Tâches de nettoyage</h3>
       <div class="taskGroup">
         <label><input type="checkbox" class="taskCheck" value="temp">
-          <div>Fichiers temporaires<div class="desc">%TEMP%, C:\Windows\Temp, Prefetch, SoftwareDistribution\Download</div></div>
+          <div>Fichiers temporaires<div class="desc">Fichiers temporaires et cache des mises à jour Windows.</div></div>
         </label>
         <label><input type="checkbox" class="taskCheck" value="browser">
           <div>Caches navigateurs<div class="desc">Chrome, Edge, Firefox</div></div>
         </label>
         <label><input type="checkbox" class="taskCheck" value="dism">
-          <div>DISM / Windows.old<div class="desc">Long (10-30 min)</div></div>
+          <div>DISM / Windows.old<div class="desc">Nettoyage des composants Windows · 10 à 30 min.</div></div>
         </label>
         <label><input type="checkbox" class="taskCheck" value="profiles" id="profilesCheck">
           <div>Profils utilisateurs anciens
@@ -307,7 +414,7 @@
     <table>
       <thead><tr>
         <th>Poste</th><th>Statut</th>
-        <th>temp</th><th>browser</th><th>dism</th><th>profiles</th>
+        <th>Temporaires</th><th>Navigateurs</th><th>Windows</th><th>Profils</th>
         <th>Total libéré</th>
       </tr></thead>
       <tbody id="resultsBody"></tbody>
@@ -316,13 +423,14 @@
 </div>
 
 <!-- ============ TAB PÉRIPHÉRIQUES ============ -->
-<div id="panel-devices" class="panel">
+<div id="panel-devices" class="panel" role="tabpanel" aria-labelledby="tab-devices">
+  <div class="section-intro"><div><h2>Périphériques</h2><p>Inspectez le matériel et les erreurs d’un poste Windows.</p></div></div>
   <div class="bar">
     <label>Poste :
       <select id="devNodeSel" style="min-width:240px"><option value="">— sélectionner —</option></select>
     </label>
     <button id="devLoadBtn" class="primary">Charger</button>
-    <button id="devRefreshBtn">Forcer rafraîchir</button>
+    <button id="devRefreshBtn">Actualiser depuis le poste</button>
     <span style="flex:1"></span>
     <input id="devFilter" type="text" placeholder="Filtrer (nom, classe, statut...)" style="min-width:200px">
     <label><input type="checkbox" id="devErrorsOnly"> En erreur uniquement</label>
@@ -338,7 +446,8 @@
 </div>
 
 <!-- ============ TAB DRIVERS ============ -->
-<div id="panel-drivers" class="panel">
+<div id="panel-drivers" class="panel" role="tabpanel" aria-labelledby="tab-drivers">
+  <div class="section-intro"><div><h2>Installer des pilotes</h2><p>Choisissez les postes, puis un pack de pilotes disponible.</p></div></div>
   <div class="bar">
     <button id="drvRefreshBtn">Rafraîchir</button>
     <button id="drvUploadFilesBtn" title="Sélectionne plusieurs fichiers (.inf, .sys, .cat, .dll…)">Déposer des fichiers</button>
@@ -349,7 +458,7 @@
     <span id="drvSelCount" class="pill">0 poste(s) sélectionné(s)</span>
     <span style="flex:1"></span>
     <span id="drvDirInfo" style="color:#888; font-size:11px"></span>
-    <button id="drvInstallBtn" class="primary" disabled>Installer le driver sélectionné</button>
+    <button id="drvInstallBtn" class="primary" disabled>Installer le pack sélectionné</button>
   </div>
 
   <div class="cols">
@@ -358,15 +467,15 @@
         <label style="font-weight:normal; font-size:11px">
           <input type="checkbox" id="drvOnlineOnly" checked> en ligne uniquement
         </label>
-        <button id="drvSelectAllBtn">Tout</button>
+        <button id="drvSelectAllBtn">Cocher la liste</button>
         <button id="drvSelectNoneBtn">Aucun</button>
       </h3>
-      <div class="search"><input id="drvSearchAgents" placeholder="Rechercher (nom, salle, OS)"></div>
+      <div class="search"><input id="drvSearchAgents" placeholder="Rechercher (nom, salle, OS, modèle)"></div>
       <div class="body" id="drvAgentsBody"><div class="empty">Chargement…</div></div>
     </div>
 
     <div class="col">
-      <h3>Drivers disponibles <span id="drvCount" class="pill">0</span></h3>
+      <h3>Packs de pilotes <span id="drvCount" class="pill">0</span></h3>
       <div class="body" id="drvList"><div class="empty">Chargement…</div></div>
     </div>
   </div>
@@ -382,7 +491,8 @@
 </div>
 
 <!-- ============ TAB ÉVÉNEMENTS ============ -->
-<div id="panel-events" class="panel">
+<div id="panel-events" class="panel" role="tabpanel" aria-labelledby="tab-events">
+  <div class="section-intro"><div><h2>Événements Windows</h2><p>Retrouvez les erreurs récentes d’un poste et leur origine.</p></div></div>
   <div class="bar">
     <select id="evtNodeSel" style="min-width:240px"><option value="">— sélectionner un poste —</option></select>
     <label style="font-size:12px; color:#666">
@@ -410,8 +520,11 @@
 </div>
 
 <!-- ============ TAB SANTÉ ============ -->
-<div id="panel-health" class="panel">
+<div id="panel-health" class="panel active" role="tabpanel" aria-labelledby="tab-health">
+  <div class="section-intro"><div><h2>Santé du parc</h2><p>Repérez les alertes et consultez les postes par salle.</p></div></div>
   <div class="bar">
+    <input id="healthSearch" type="search" aria-label="Rechercher un poste ou une salle" placeholder="Rechercher un poste, une salle…">
+    <select id="healthRoom" aria-label="Salle"><option value="">Toutes les salles</option></select>
     <button id="healthRefreshBtn">Rafraîchir</button>
     <label style="font-size:12px; color:#666">
       <input type="checkbox" id="healthOnlineOnly" checked> Postes allumés uniquement
@@ -421,16 +534,15 @@
     </label>
     <span style="flex:1"></span>
     <span id="healthLastUpdate" style="font-size:11px; color:#888"></span>
-    <span id="healthAutoInfo" style="font-size:11px; color:#888">refresh auto : 5 min</span>
+    <span id="healthAutoInfo" style="font-size:11px; color:#888">Actualisation · 5 min</span>
   </div>
 
-  <div class="healthBar">
-    <span class="stat"><b id="healthTotalOnline">0</b>postes allumés</span>
-    <span class="stat crit"><b id="healthCritCount">0</b>alertes critiques</span>
-    <span class="stat warn"><b id="healthWarnCount">0</b>warnings</span>
-    <span style="flex:1"></span>
-    <span id="healthThresholds" style="font-size:11px; color:#888"></span>
+  <div class="healthBar health-stats">
+    <span class="stat"><b id="healthTotalOnline">—</b>Postes en ligne</span>
+    <span class="stat crit"><b id="healthCritCount">—</b>Alertes critiques</span>
+    <span class="stat warn"><b id="healthWarnCount">—</b>Avertissements</span>
   </div>
+  <span id="healthThresholds"></span>
 
   <div id="healthAlertsList" class="healthAlerts" style="display:none; height:180px"></div>
   <div id="healthSplit" class="splitDrag" style="display:none" title="Glisser pour redimensionner"></div>
@@ -439,7 +551,8 @@
 </div>
 
 <!-- ============ TAB REGISTRE ============ -->
-<div id="panel-registry" class="panel">
+<div id="panel-registry" class="panel" role="tabpanel" aria-labelledby="tab-registry">
+  <div class="section-intro"><div><h2>Registre Windows</h2><p>Parcourez les clés ou appliquez un modèle aux postes sélectionnés.</p></div></div>
   <div class="bar">
     <button id="regRefreshAgents">Rafraîchir postes</button>
     <button id="regRefreshTree">Recharger l'arbre</button>
@@ -479,82 +592,9 @@
   </div>
 </div>
 
-<!-- ============ TAB EXAMEN ============ -->
-<div id="panel-exam" class="panel">
-  <div class="bar">
-    <button id="examRefreshBtn">Rafraîchir</button>
-    <span id="examSelCount" class="pill">0 poste(s) sélectionné(s)</span>
-    <span id="examLockedCount" class="pill" style="background:#fff3cd;color:#856404;display:none"></span>
-    <span style="flex:1"></span>
-    <button id="examLockBtn" class="primary" disabled style="background:#d9534f;color:#fff">🔒 Verrouiller examen</button>
-    <button id="examUnlockBtn" disabled>🔓 Déverrouiller sélection</button>
-    <button id="examUnlockAllBtn" title="Déverrouille tous les postes actuellement verrouillés">⚠ Tout déverrouiller</button>
-  </div>
-
-  <div class="cols">
-    <div class="col">
-      <h3>Postes <span id="examAgentsCount" class="pill">0</span><span class="spacer"></span>
-        <label style="font-weight:normal;font-size:11px"><input type="checkbox" id="examOnlineOnly" checked> en ligne</label>
-        <button id="examSelectAllBtn">Tout</button>
-        <button id="examSelectNoneBtn">Aucun</button>
-      </h3>
-      <div class="search"><input id="examSearchAgents" placeholder="Rechercher (nom, salle)"></div>
-      <div class="body" id="examAgentsBody"><div class="empty">Chargement…</div></div>
-    </div>
-
-    <div class="col tasks">
-      <h3>Options de verrouillage</h3>
-      <div class="taskGroup">
-        <label style="background:#f6f8fa">
-          <input type="checkbox" checked disabled>
-          <div>Toujours autorisé
-            <div class="desc">Serveur MeshCentral (détecté automatiquement) — sinon plus moyen de débloquer à distance.</div>
-          </div>
-        </label>
-        <label>
-          <input type="checkbox" id="examAllowDns" checked>
-          <div>DNS locaux
-            <div class="desc">Serveurs DNS configurés sur la carte réseau (sinon plus rien ne résout, y compris MC).</div>
-          </div>
-        </label>
-        <label>
-          <input type="checkbox" id="examAllowLan">
-          <div>LAN local
-            <div class="desc">Tout le subnet local du poste (imprimantes, AD, serveur d'épreuve interne, partages).</div>
-          </div>
-        </label>
-        <label>
-          <input type="checkbox" id="examAllowCustomChk">
-          <div>Whitelist personnalisée
-            <div class="desc">
-              IPs, CIDR ou hostnames séparés par virgule ou retour ligne.
-              <textarea id="examAllowCustom" rows="3" placeholder="ex: examen.lycee.local, 10.20.0.0/16, 8.8.8.8" style="width:100%;margin-top:4px;font-family:Menlo,Consolas,monospace;font-size:11px" onclick="event.stopPropagation()"></textarea>
-            </div>
-          </div>
-        </label>
-        <label>
-          <input type="checkbox" checked disabled>
-          <div>Durée du verrouillage
-            <div class="desc">
-              Auto-unlock après
-              <input id="examDuration" type="number" value="120" min="5" max="1440" style="width:60px;font-size:11px;padding:1px 4px" onclick="event.stopPropagation()"> minutes (filet de sécurité Windows si on oublie de déverrouiller).
-            </div>
-          </div>
-        </label>
-      </div>
-    </div>
-  </div>
-
-  <div id="examResults" class="results" style="display:none">
-    <table>
-      <thead><tr><th>Poste</th><th>Salle</th><th>Action</th><th>Statut</th><th>Whitelist</th><th>Détail</th></tr></thead>
-      <tbody id="examResultsBody"></tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ============ TAB CONNEXIONS MULTIPLES ============ -->
-<div id="panel-sessions" class="panel">
+<!-- ============ TAB CONNEXIONS ============ -->
+<div id="panel-sessions" class="panel" role="tabpanel" aria-labelledby="tab-sessions">
+  <div class="section-intro"><div><h2>Connexions Windows</h2><p>Consultez les sessions, les conflits et leur historique.</p></div></div>
   <div class="bar">
     <button id="multiLoginRefreshBtn">Rafraîchir</button>
     <span id="multiLoginState" class="pill">Chargement…</span>
@@ -565,7 +605,8 @@
   </div>
 
   <div class="multiLoginCard">
-    <h3>Règle de connexion Windows</h3>
+    <h3>Règle de connexion Windows <span id="multiLoginEditState" role="status"></span></h3>
+    <button id="multiLoginResetBtn" type="button" hidden>Annuler les modifications</button>
     <label class="multiLoginOption">
       <input type="checkbox" id="multiLoginEnabled">
       <div><b>Bloquer les connexions multiples</b>
@@ -580,7 +621,7 @@
       <label>Délai de réponse : <input id="multiLoginTimeout" type="number" min="15" max="120" value="45" style="width:58px"> s</label>
       <label style="flex:1;min-width:320px">Comptes exclus : <input id="multiLoginExcluded" type="text" style="width:70%" placeholder="administrator, administrateur, admin, maintenance"></label>
     </div>
-    <div style="margin-top:10px;padding:8px;background:#fff3cd;color:#6b5200;font-size:11px;border-radius:3px">
+    <div class="rule-notice">
       Le journal de sécurité Windows est surveillé en temps réel. En mode refus, la nouvelle session est fermée dès l’événement 4624, normalement pendant l’écran « Bienvenue ». L’authentification a toutefois déjà réussi : ce mécanisme ferme immédiatement la session, il ne remplace pas un Credential Provider Windows. Fermer une session distante arrête ses applications et peut faire perdre un travail non enregistré.
     </div>
   </div>
@@ -588,6 +629,7 @@
   <div class="multiLoginCard">
     <h3>Conflits actuellement détectés</h3>
     <div style="font-size:11px;color:#777;margin:-4px 0 8px 0">L’inventaire reste actif et les conflits restent visibles même lorsque le blocage est désactivé.</div>
+    <div class="bar"><input id="multiLoginSearch" type="search" aria-label="Rechercher dans les connexions" placeholder="Utilisateur, salle ou poste…"><span id="multiLoginLastUpdate" class="pill">Actualisation · 10 s</span></div>
     <div id="multiLoginConflicts"><div class="empty">Aucun conflit.</div></div>
     <h3 id="multiLoginConflictHistoryTitle" style="margin-top:18px">Historique des conflits détectés</h3>
     <div id="multiLoginConflictHistory"><div class="empty">Aucun conflit conservé.</div></div>
@@ -796,13 +838,61 @@ function getJson(url) {
   });
 }
 
+function stableHtml(element, html) {
+  if (element._maintHtml === html) return false;
+  var top = element.scrollTop, left = element.scrollLeft;
+  element.innerHTML = html;
+  element._maintHtml = html;
+  element.scrollTop = top; element.scrollLeft = left;
+  return true;
+}
+function preserveMaintenanceView(update) {
+  var ids = ['panel-health', 'healthGroups', 'healthAlertsScroll', 'panel-sessions', 'multiLoginConflictHistory', 'multiLoginEvents'];
+  var positions = ids.map(function (id) {
+    var el = document.getElementById(id);
+    return el ? { id: id, top: el.scrollTop, left: el.scrollLeft } : null;
+  });
+  var x = window.scrollX, y = window.scrollY;
+  update();
+  positions.forEach(function (pos) {
+    var el = pos && document.getElementById(pos.id);
+    if (el) { el.scrollTop = pos.top; el.scrollLeft = pos.left; }
+  });
+  if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+}
+function filteredWindowsAgents(onlineOnly, query) {
+  var q = String(query || '').toLowerCase().trim();
+  return agents.filter(function (a) {
+    if (onlineOnly && !a.online) return false;
+    if (a.family && a.family !== 'Windows') return false;
+    return !q || [a.name, a.mesh, a.os, a.model].some(function (value) {
+      return String(value || '').toLowerCase().indexOf(q) !== -1;
+    });
+  });
+}
+function updateFleetSummary() {
+  var windows = filteredWindowsAgents(false, '');
+  document.getElementById('fleetSummary').textContent = windows.length + ' postes Windows';
+  document.getElementById('fleetStatus').textContent = windows.filter(function (a) { return a.online; }).length + ' en ligne · inventaire MeshCentral';
+}
+
 // ---- Tabs ----
 Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
   t.addEventListener('click', function () {
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) { x.classList.remove('active'); });
     Array.prototype.forEach.call(document.querySelectorAll('.panel'), function (x) { x.classList.remove('active'); });
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) { x.setAttribute('aria-selected', String(x === t)); x.tabIndex = x === t ? 0 : -1; });
     t.classList.add('active');
     document.getElementById('panel-' + t.getAttribute('data-tab')).classList.add('active');
+  });
+  t.addEventListener('keydown', function (event) {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+    var index = tabs.indexOf(t), target;
+    if (event.key === 'ArrowRight') target = tabs[(index + 1) % tabs.length];
+    if (event.key === 'ArrowLeft') target = tabs[(index + tabs.length - 1) % tabs.length];
+    if (event.key === 'Home') target = tabs[0];
+    if (event.key === 'End') target = tabs[tabs.length - 1];
+    if (target) { event.preventDefault(); target.focus(); target.click(); }
   });
 });
 
@@ -810,26 +900,19 @@ Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
 
 function refreshAgents() {
   return getJson(BASE + '&action=agents').then(function (data) {
-    agents = data.agents || [];
+    if (!data || data.error || !Array.isArray(data.agents)) throw new Error(data && data.error || 'Inventaire invalide');
+    agents = data.agents;
+    updateFleetSummary();
     renderAgents();
     populateDevNodeSelect();
     populateEvtNodeSelect();
   }).catch(function (e) {
-    document.getElementById('agentsBody').innerHTML = '<div class="empty">Erreur: ' + e.message + '</div>';
+    document.getElementById('agentsBody').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(e.message) + '</div>';
   });
 }
 
 function renderAgents() {
-  var onlineOnly = document.getElementById('onlineOnly').checked;
-  var q = (document.getElementById('searchAgents').value || '').toLowerCase();
-  var filtered = agents.filter(function (a) {
-    if (onlineOnly && !a.online) return false;
-    if (a.family && a.family !== 'Windows') return false;
-    if (!q) return true;
-    return (a.name || '').toLowerCase().indexOf(q) >= 0
-      || (a.mesh || '').toLowerCase().indexOf(q) >= 0
-      || (a.os || '').toLowerCase().indexOf(q) >= 0;
-  });
+  var filtered = filteredWindowsAgents(document.getElementById('onlineOnly').checked, document.getElementById('searchAgents').value);
   var body = document.getElementById('agentsBody');
   document.getElementById('agentsCount').textContent = filtered.length + ' / ' + agents.length;
   if (!filtered.length) { body.innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
@@ -913,7 +996,7 @@ function showCleanHistory(nodeId) {
 function updateSelCount() {
   var n = Object.keys(selected).length;
   document.getElementById('selCount').textContent = n + ' poste(s) sélectionné(s)';
-  document.getElementById('runBtn').disabled = !n;
+  document.getElementById('runBtn').disabled = !n || !selectedTasks().length;
 }
 
 function selectedTasks() {
@@ -1015,7 +1098,7 @@ function renderResults(run) {
       + '<td>' + cell('dism') + '</td><td>' + cell('profiles') + '</td>'
       + '<td><b>' + fmtBytes(r.totalBytes) + '</b></td></tr>';
   });
-  tbody.innerHTML = rows;
+  stableHtml(tbody, rows);
 }
 
 // ---- PÉRIPHÉRIQUES ----
@@ -1326,15 +1409,9 @@ document.getElementById('devActRemove').addEventListener('click', function () { 
 
 document.getElementById('refreshBtn').addEventListener('click', refreshAgents);
 document.getElementById('runBtn').addEventListener('click', runClean);
+Array.prototype.forEach.call(document.querySelectorAll('.taskCheck'), function (input) { input.addEventListener('change', updateSelCount); });
 document.getElementById('selectAllBtn').addEventListener('click', function () {
-  var onlineOnly = document.getElementById('onlineOnly').checked;
-  var q = (document.getElementById('searchAgents').value || '').toLowerCase();
-  agents.forEach(function (a) {
-    if (onlineOnly && !a.online) return;
-    if (a.family && a.family !== 'Windows') return;
-    if (q && (a.name || '').toLowerCase().indexOf(q) < 0 && (a.mesh || '').toLowerCase().indexOf(q) < 0) return;
-    selected[a.id] = true;
-  });
+  filteredWindowsAgents(document.getElementById('onlineOnly').checked, document.getElementById('searchAgents').value).forEach(function (a) { selected[a.id] = true; });
   updateSelCount(); renderAgents();
 });
 document.getElementById('selectNoneBtn').addEventListener('click', function () {
@@ -1357,16 +1434,7 @@ function fmtMtime(ms) {
 }
 
 function renderDrvAgents() {
-  var onlineOnly = document.getElementById('drvOnlineOnly').checked;
-  var q = (document.getElementById('drvSearchAgents').value || '').toLowerCase();
-  var filtered = agents.filter(function (a) {
-    if (onlineOnly && !a.online) return false;
-    if (a.family && a.family !== 'Windows') return false;
-    if (!q) return true;
-    return (a.name || '').toLowerCase().indexOf(q) >= 0
-      || (a.mesh || '').toLowerCase().indexOf(q) >= 0
-      || (a.os || '').toLowerCase().indexOf(q) >= 0;
-  });
+  var filtered = filteredWindowsAgents(document.getElementById('drvOnlineOnly').checked, document.getElementById('drvSearchAgents').value);
   var body = document.getElementById('drvAgentsBody');
   document.getElementById('drvAgentsCount').textContent = filtered.length + ' / ' + agents.length;
   if (!filtered.length) { body.innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
@@ -1699,7 +1767,7 @@ function renderDrvResults(run) {
       + '<td>' + installed + '</td>'
       + '<td>' + reboot + '</td></tr>';
   });
-  tbody.innerHTML = rows;
+  stableHtml(tbody, rows);
 }
 
 document.getElementById('drvRefreshBtn').addEventListener('click', function () { refreshAgents().then(refreshDrivers); });
@@ -1726,14 +1794,7 @@ document.getElementById('drvUploadFilesInput').addEventListener('change', functi
 });
 document.getElementById('drvInstallBtn').addEventListener('click', runDriverInstall);
 document.getElementById('drvSelectAllBtn').addEventListener('click', function () {
-  var onlineOnly = document.getElementById('drvOnlineOnly').checked;
-  var q = (document.getElementById('drvSearchAgents').value || '').toLowerCase();
-  agents.forEach(function (a) {
-    if (onlineOnly && !a.online) return;
-    if (a.family && a.family !== 'Windows') return;
-    if (q && (a.name || '').toLowerCase().indexOf(q) < 0 && (a.mesh || '').toLowerCase().indexOf(q) < 0) return;
-    drvSelected[a.id] = true;
-  });
+  filteredWindowsAgents(document.getElementById('drvOnlineOnly').checked, document.getElementById('drvSearchAgents').value).forEach(function (a) { drvSelected[a.id] = true; });
   updateDrvUi(); renderDrvAgents();
 });
 document.getElementById('drvSelectNoneBtn').addEventListener('click', function () {
@@ -1751,6 +1812,7 @@ document.querySelector('.tab[data-tab="drivers"]').addEventListener('click', fun
 // ============================ SANTÉ ============================
 var healthData = null;
 var healthTimer = null;
+var healthLoading = null, healthFetchedAt = 0;
 var HEALTH_POLL_MS = 5 * 60 * 1000;
 
 function fmtBoot(ms) {
@@ -1760,19 +1822,38 @@ function fmtBoot(ms) {
        + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
 }
 
-function refreshHealth() {
-  getJson(BASE + '&action=health').then(function (data) {
-    healthData = data;
-    renderHealth();
-  }).catch(function (e) {
-    document.getElementById('healthGroups').innerHTML = '<div class="empty">Erreur: ' + escapeHtml(e.message) + '</div>';
+function filteredHealthAgents() {
+  var q = document.getElementById('healthSearch').value.toLowerCase().trim();
+  var room = document.getElementById('healthRoom').value;
+  return (healthData && healthData.agents || []).filter(function (a) {
+    if (document.getElementById('healthOnlineOnly').checked && !a.online) return false;
+    if (document.getElementById('healthAlertsOnly').checked && !(a.alerts && a.alerts.length)) return false;
+    if (room && (a.mesh || '(sans salle)') !== room) return false;
+    return !q || [a.name, a.mesh, a.model].some(function (value) { return String(value || '').toLowerCase().indexOf(q) !== -1; });
   });
+}
+function refreshHealth() {
+  if (healthLoading) return healthLoading;
+  var button = document.getElementById('healthRefreshBtn');
+  button.disabled = true;
+  healthLoading = getJson(BASE + '&action=health').then(function (data) {
+    if (!data || data.error || !Array.isArray(data.agents)) throw new Error(data && data.error || 'Inventaire santé invalide');
+    healthData = data; healthFetchedAt = Date.now();
+    var room = document.getElementById('healthRoom'), previous = room.value;
+    var rooms = Array.from(new Set(data.agents.map(function (a) { return a.mesh || '(sans salle)'; }))).sort();
+    stableHtml(room, '<option value="">Toutes les salles</option>' + rooms.map(function (name) { return '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>'; }).join(''));
+    room.value = rooms.indexOf(previous) >= 0 ? previous : '';
+    preserveMaintenanceView(renderHealth);
+  }).catch(function (e) {
+    document.getElementById('healthLastUpdate').textContent = 'Actualisation impossible : ' + e.message + (healthData ? ' · dernières données conservées' : '');
+    if (!healthData) stableHtml(document.getElementById('healthGroups'), '<div class="empty">Erreur : ' + escapeHtml(e.message) + '</div>');
+  }).then(function () { healthLoading = null; button.disabled = false; });
+  return healthLoading;
 }
 
 function renderHealth() {
   if (!healthData) return;
-  var onlineOnly = document.getElementById('healthOnlineOnly').checked;
-  var alertsOnly = document.getElementById('healthAlertsOnly').checked;
+  var filtered = filteredHealthAgents();
 
   // Badge sur l'onglet
   var badge = document.getElementById('healthAlertBadge');
@@ -1792,12 +1873,12 @@ function renderHealth() {
   document.getElementById('healthWarnCount').textContent = healthData.warningCount || 0;
   var th = healthData.thresholds || {};
   document.getElementById('healthThresholds').textContent =
-    'seuils : disque <' + th.diskWarnGB + ' Go (warn), <' + th.diskCriticalGB + ' Go (crit) · uptime >' + th.uptimeWarnDays + ' j (warn), >' + th.uptimeCriticalDays + ' j (crit)';
-  document.getElementById('healthLastUpdate').textContent = 'maj : ' + fmtBoot(Date.now());
+    'Seuils : disque < ' + th.diskWarnGB + ' Go / critique < ' + th.diskCriticalGB + ' Go · fonctionnement continu > ' + th.uptimeWarnDays + ' j / critique > ' + th.uptimeCriticalDays + ' j';
+  document.getElementById('healthLastUpdate').textContent = 'Actualisé le ' + fmtBoot(healthFetchedAt);
 
   // Liste des alertes (en haut, condensée)
   var alertItems = [];
-  healthData.agents.forEach(function (a) {
+  filtered.forEach(function (a) {
     (a.alerts || []).forEach(function (al) {
       alertItems.push({ name: a.name, mesh: a.mesh, level: al.level, message: al.message, id: a.id });
     });
@@ -1815,7 +1896,7 @@ function renderHealth() {
     var headTxt = 'Alertes actives — '
       + (nCrit ? nCrit + ' critique' + (nCrit > 1 ? 's' : '') : '')
       + (nCrit && nWarn ? ' · ' : '')
-      + (nWarn ? nWarn + ' warning' + (nWarn > 1 ? 's' : '') : '');
+      + (nWarn ? nWarn + ' avertissement' + (nWarn > 1 ? 's' : '') : '');
     var rows = alertItems.map(function (i) {
       return '<tr data-id="' + escapeHtml(i.id) + '">'
         + '<td style="width:14px"><span class="lvl ' + i.level + '" title="' + i.level + '"></span></td>'
@@ -1824,16 +1905,16 @@ function renderHealth() {
         + '<td class="msg">' + escapeHtml(i.message) + '</td>'
         + '</tr>';
     }).join('');
-    alertsBox.innerHTML =
+    stableHtml(alertsBox,
       '<div class="head">' + escapeHtml(headTxt) + '</div>'
-      + '<div class="body"><table>'
+      + '<div id="healthAlertsScroll" class="body"><table>'
       + '<thead><tr><th></th><th>Poste</th><th>Salle</th><th>Détail</th></tr></thead>'
-      + '<tbody>' + rows + '</tbody></table></div>';
+      + '<tbody>' + rows + '</tbody></table></div>');
     alertsBox.style.display = 'block';
     splitBar.style.display = 'flex';
     // Click sur une ligne → scroll/highlight la carte du poste dans la grille
     Array.prototype.forEach.call(alertsBox.querySelectorAll('tbody tr'), function (tr) {
-      tr.addEventListener('click', function () {
+      tr.onclick = function () {
         var pcId = tr.getAttribute('data-id');
         var card = document.querySelector('.pcCard[data-id="' + pcId + '"]');
         if (card) {
@@ -1841,20 +1922,15 @@ function renderHealth() {
           card.style.outline = '2px solid #2c7be5';
           setTimeout(function () { card.style.outline = ''; }, 1500);
         }
-      });
+      };
     });
   } else {
-    alertsBox.innerHTML = '<div class="head" style="background:#e6f4ea;border-color:#b6dec0;color:#1f5b30">Aucune alerte active 🟢</div>';
+    stableHtml(alertsBox, '<div class="head" style="background:#e6f4ea;border-color:#b6dec0;color:#1f5b30">Aucune alerte pour les postes affichés</div>');
     alertsBox.style.display = 'block';
     splitBar.style.display = 'flex';
   }
 
   // Filtre + groupement par salle (mesh)
-  var filtered = healthData.agents.filter(function (a) {
-    if (onlineOnly && !a.online) return false;
-    if (alertsOnly && !(a.alerts && a.alerts.length)) return false;
-    return true;
-  });
   var byMesh = {};
   filtered.forEach(function (a) {
     var k = a.mesh || '(sans salle)';
@@ -1865,7 +1941,7 @@ function renderHealth() {
     return a.localeCompare(b, 'fr', { numeric: true });
   });
   if (!meshNames.length) {
-    document.getElementById('healthGroups').innerHTML = '<div class="empty">Aucun poste à afficher avec ces filtres.</div>';
+    stableHtml(document.getElementById('healthGroups'), '<div class="empty">Aucun poste à afficher avec ces filtres.</div>');
     return;
   }
   var html = '';
@@ -1875,7 +1951,7 @@ function renderHealth() {
     var warn = pcs.filter(function (p) { return (p.alerts || []).some(function (a) { return a.level === 'warning'; }); }).length;
     var sum = '';
     if (crit) sum += ' <span style="color:#c9302c">· ' + crit + ' critique' + (crit>1?'s':'') + '</span>';
-    if (warn) sum += ' <span style="color:#d58512">· ' + warn + ' warning' + (warn>1?'s':'') + '</span>';
+    if (warn) sum += ' <span style="color:#d58512">· ' + warn + ' avertissement' + (warn>1?'s':'') + '</span>';
     html += '<div class="salleGroup"><h4>' + escapeHtml(m) + ' <span class="count">(' + pcs.length + ')</span>' + sum + '</h4>';
     html += '<div class="healthGrid">';
     pcs.forEach(function (p) {
@@ -1912,21 +1988,23 @@ function renderHealth() {
         + '<div class="metric' + (diskCls ? ' ' + diskCls : '') + '"><span>Disque C:</span><span class="v">'
           + (disk != null ? (disk + '/' + diskTot + ' Go') : '—') + '</span></div>'
         + (disk != null ? '<div class="diskBar"><div class="fill ' + fillCls + '" style="width:' + fillW + '%"></div></div>' : '')
-        + '<div class="metric' + (upCls ? ' ' + upCls : '') + '"><span>Uptime</span><span class="v">'
+        + '<div class="metric' + (upCls ? ' ' + upCls : '') + '"><span>Sans redémarrage</span><span class="v">'
           + (uptime != null
               ? (uptime >= 1 ? (Math.round(uptime) + ' j')
                  : (Math.max(0, Math.round(uptime * 24)) + ' h'))
               : '—') + '</span></div>'
-        + '<div class="metric"><span>Dernier boot</span><span class="v" style="font-size:11px">' + fmtBoot(p.health.lastBoot) + '</span></div>'
+        + '<div class="metric"><span>Dernier démarrage</span><span class="v" style="font-size:11px">' + fmtBoot(p.health.lastBoot) + '</span></div>'
         + '</div>';
     });
     html += '</div></div>';
   });
-  document.getElementById('healthGroups').innerHTML = html;
+  stableHtml(document.getElementById('healthGroups'), html);
 }
 
 document.getElementById('healthRefreshBtn').addEventListener('click', refreshHealth);
 document.getElementById('healthOnlineOnly').addEventListener('change', renderHealth);
+document.getElementById('healthSearch').addEventListener('input', renderHealth);
+document.getElementById('healthRoom').addEventListener('change', renderHealth);
 
 // Drag handle pour redimensionner le panneau d'alertes
 (function setupHealthSplit() {
@@ -2858,221 +2936,11 @@ refreshAgents().then(function () {
 })();
 
 // =================================================================
-// ============== ONGLET EXAMEN (coupure internet) =================
-// =================================================================
-(function () {
-  var examSelected = {};
-  var examLocks = {};
-  var examLoaded = false;
-
-  function $$(id) { return document.getElementById(id); }
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
-    });
-  }
-
-  function updateExamSelCount() {
-    var n = Object.keys(examSelected).length;
-    $$('examSelCount').textContent = n + ' poste(s) sélectionné(s)';
-    $$('examLockBtn').disabled = !n;
-    $$('examUnlockBtn').disabled = !n;
-  }
-
-  function updateLockedBadge() {
-    var n = Object.keys(examLocks).length;
-    var b = $$('examLockedBadge');
-    if (n > 0) { b.textContent = n; b.style.display = ''; }
-    else b.style.display = 'none';
-    var pill = $$('examLockedCount');
-    if (n > 0) { pill.textContent = '🔒 ' + n + ' poste(s) verrouillé(s)'; pill.style.display = ''; }
-    else pill.style.display = 'none';
-  }
-
-  function renderExamAgents() {
-    var onlineOnly = $$('examOnlineOnly').checked;
-    var q = ($$('examSearchAgents').value || '').toLowerCase();
-    var filtered = agents.filter(function (a) {
-      if (onlineOnly && !a.online) return false;
-      if (a.family && a.family !== 'Windows') return false;
-      if (!q) return true;
-      return (a.name || '').toLowerCase().indexOf(q) >= 0 || (a.mesh || '').toLowerCase().indexOf(q) >= 0;
-    });
-    // Tri par salle puis nom
-    filtered.sort(function (a, b) {
-      var ma = (a.mesh || '').toLowerCase(), mb = (b.mesh || '').toLowerCase();
-      if (ma < mb) return -1; if (ma > mb) return 1;
-      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
-    });
-    $$('examAgentsCount').textContent = filtered.length + ' / ' + agents.length;
-    var body = $$('examAgentsBody');
-    if (!filtered.length) { body.innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
-    var html = '';
-    var lastMesh = null;
-    filtered.forEach(function (a) {
-      if (a.mesh !== lastMesh) {
-        lastMesh = a.mesh;
-        var meshNodes = filtered.filter(function (x) { return x.mesh === a.mesh; });
-        var allSel = meshNodes.every(function (x) { return examSelected[x.id]; });
-        html += '<div style="padding:4px 8px;background:#eef4fb;font-size:11px;font-weight:600;border-top:1px solid #ddd;display:flex;align-items:center;gap:6px">'
-              + '<input type="checkbox" class="examMeshCheck" data-mesh="' + esc(a.mesh) + '"' + (allSel ? ' checked' : '') + '>'
-              + '<span style="flex:1">' + esc(a.mesh || '?') + ' <span style="color:#888;font-weight:normal">(' + meshNodes.length + ')</span></span>'
-              + '</div>';
-      }
-      var sel = !!examSelected[a.id];
-      var locked = !!examLocks[a.id];
-      html += '<div class="row' + (sel ? ' selected' : '') + '" data-id="' + a.id + '">'
-            + '<input type="checkbox"' + (sel ? ' checked' : '') + '>'
-            + '<span class="statusDot ' + (a.online ? 'on' : 'off') + '"></span>'
-            + '<div class="main">'
-            + '<div class="title">' + esc(a.name) + (locked ? ' <span class="badge" style="background:#d9534f;color:#fff">🔒 verrouillé</span>' : '') + '</div>'
-            + '<div class="sub"><span class="badge">' + esc(a.mesh || '?') + '</span>'
-            + (locked && examLocks[a.id].until ? '<span class="badge" style="background:#fff3cd;color:#856404">jusqu\'à ' + esc(examLocks[a.id].until) + '</span>' : '')
-            + '</div></div></div>';
-    });
-    body.innerHTML = html;
-    Array.prototype.forEach.call(body.querySelectorAll('.row'), function (row) {
-      row.addEventListener('click', function () {
-        var id = row.getAttribute('data-id');
-        examSelected[id] = !examSelected[id];
-        if (!examSelected[id]) delete examSelected[id];
-        updateExamSelCount();
-        renderExamAgents();
-      });
-    });
-    Array.prototype.forEach.call(body.querySelectorAll('.examMeshCheck'), function (cb) {
-      cb.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var mesh = cb.getAttribute('data-mesh');
-        var meshNodes = filtered.filter(function (x) { return x.mesh === mesh; });
-        var allSel = meshNodes.every(function (x) { return examSelected[x.id]; });
-        meshNodes.forEach(function (x) {
-          if (allSel) delete examSelected[x.id];
-          else examSelected[x.id] = true;
-        });
-        updateExamSelCount();
-        renderExamAgents();
-      });
-    });
-  }
-
-  function loadExamLocks() {
-    return fetch(BASE + '&action=examLocksList', { credentials: 'include' })
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        examLocks = (j && j.locks) || {};
-        updateLockedBadge();
-        renderExamAgents();
-      }).catch(function () {});
-  }
-
-  function buildPayload(extraNodes) {
-    var nodes = extraNodes || Object.keys(examSelected);
-    var customRaw = $$('examAllowCustom').value || '';
-    var custom = [];
-    if ($$('examAllowCustomChk').checked) {
-      custom = customRaw.split(/[\s,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
-    }
-    return {
-      nodes: nodes,
-      allowLan: $$('examAllowLan').checked,
-      allowDns: $$('examAllowDns').checked,
-      customAllow: custom,
-      durationMin: parseInt($$('examDuration').value, 10) || 120,
-    };
-  }
-
-  function renderExamResults(j) {
-    if (!j || !j.nodes) return;
-    var box = $$('examResults'); box.style.display = '';
-    var tbody = $$('examResultsBody');
-    var rows = '';
-    j.nodes.forEach(function (n) {
-      var a = agents.filter(function (x) { return x.id === n.nodeId; })[0] || {};
-      var statusCell = n.ok
-        ? '<span style="color:#2ecc40;font-weight:600">✓ ' + esc(j.kind) + '</span>'
-        : '<span style="color:#d9534f;font-weight:600">✗ ' + esc(n.error || 'erreur') + '</span>';
-      var wl = n.allowCount ? (n.allowCount + ' règles allow') : '—';
-      var detail = n.until ? ('jusqu\'à ' + esc(n.until)) : (n.ruleCount ? (n.ruleCount + ' règles actives') : '');
-      rows += '<tr><td>' + esc(a.name || n.nodeId) + '</td><td>' + esc(a.mesh || '?') + '</td>'
-            + '<td>' + esc(j.kind) + '</td><td>' + statusCell + '</td>'
-            + '<td>' + wl + '</td><td>' + detail + '</td></tr>';
-    });
-    tbody.innerHTML = rows;
-  }
-
-  function doExamAction(action) {
-    var nodes = Object.keys(examSelected);
-    if (!nodes.length) return alert('Aucun poste sélectionné.');
-    if (action === 'examLock') {
-      var dur = parseInt($$('examDuration').value, 10) || 120;
-      if (!confirm('Verrouiller internet sur ' + nodes.length + ' poste(s) pour ' + dur + ' min ?\n\nLe serveur MeshCentral et les DNS locaux resteront accessibles.')) return;
-    }
-    $$('examLockBtn').disabled = true; $$('examUnlockBtn').disabled = true;
-    var payload = buildPayload(nodes);
-    fetch(BASE + '&action=' + action + '&payload=' + encodeURIComponent(JSON.stringify(payload)), { credentials: 'include' })
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        renderExamResults(j);
-        return loadExamLocks();
-      })
-      .catch(function (e) { alert('Erreur: ' + e.message); })
-      .then(function () { updateExamSelCount(); });
-  }
-
-  function doUnlockAll() {
-    var nodes = Object.keys(examLocks);
-    if (!nodes.length) return alert('Aucun poste verrouillé.');
-    if (!confirm('Déverrouiller les ' + nodes.length + ' poste(s) actuellement verrouillés ?')) return;
-    var payload = buildPayload(nodes);
-    fetch(BASE + '&action=examUnlock&payload=' + encodeURIComponent(JSON.stringify(payload)), { credentials: 'include' })
-      .then(function (r) { return r.json(); })
-      .then(function (j) { renderExamResults(j); return loadExamLocks(); })
-      .catch(function (e) { alert('Erreur: ' + e.message); });
-  }
-
-  function loadExamTab() {
-    if (typeof loadAgents === 'function' && !agents.length) {
-      // Si l'onglet nettoyage n'a pas encore chargé les agents, on les charge ici aussi.
-      loadAgents();
-    }
-    renderExamAgents();
-    loadExamLocks();
-  }
-
-  var examTab = document.querySelector('.tab[data-tab="exam"]');
-  if (examTab) {
-    examTab.addEventListener('click', function () {
-      if (!examLoaded) { examLoaded = true; loadExamTab(); }
-      else { renderExamAgents(); loadExamLocks(); }
-    });
-  }
-  $$('examRefreshBtn').addEventListener('click', loadExamTab);
-  $$('examSearchAgents').addEventListener('input', renderExamAgents);
-  $$('examOnlineOnly').addEventListener('change', renderExamAgents);
-  $$('examSelectAllBtn').addEventListener('click', function () {
-    var onlineOnly = $$('examOnlineOnly').checked;
-    agents.forEach(function (a) {
-      if (onlineOnly && !a.online) return;
-      if (a.family && a.family !== 'Windows') return;
-      examSelected[a.id] = true;
-    });
-    updateExamSelCount(); renderExamAgents();
-  });
-  $$('examSelectNoneBtn').addEventListener('click', function () {
-    examSelected = {}; updateExamSelCount(); renderExamAgents();
-  });
-  $$('examLockBtn').addEventListener('click', function () { doExamAction('examLock'); });
-  $$('examUnlockBtn').addEventListener('click', function () { doExamAction('examUnlock'); });
-  $$('examUnlockAllBtn').addEventListener('click', doUnlockAll);
-  setInterval(function () { if (examLoaded) loadExamLocks(); }, 30000);
-  loadExamLocks();
-})();
-
 // ---- CONNEXIONS MULTIPLES ----
 (function () {
   var loaded = false;
-  var editing = false;
+  var editing = false, editRevision = 0, saving = false;
+  var lastData = null, loading = null, loadVersion = 0, updatedAt = 0;
 
   function multiLoginDate(ms) {
     if (!ms) return '—';
@@ -3102,7 +2970,23 @@ refreshAgents().then(function () {
     document.getElementById('multiLoginTimeout').disabled = !enabled || selectedMultiLoginMode() !== 'prompt';
   }
 
+  function updateEditState() {
+    document.getElementById('multiLoginEditState').textContent = editing ? 'Modifications non enregistrées' : '';
+    document.getElementById('multiLoginResetBtn').hidden = !editing;
+    document.getElementById('multiLoginResetBtn').disabled = saving;
+    document.getElementById('multiLoginSaveBtn').disabled = saving || !lastData;
+  }
+  function connectionMatches(item) {
+    var q = document.getElementById('multiLoginSearch').value.toLowerCase().trim();
+    if (!q) return true;
+    var values = [item.username, item.userKey, item.name, item.mesh, item.detail, item.kind];
+    (item.sessions || []).forEach(function (session) { values.push(session.name, session.mesh); });
+    return values.some(function (value) { return String(value || '').toLowerCase().indexOf(q) !== -1; });
+  }
+
   function renderMultiLogin(data) {
+    document.getElementById('multiLoginLastUpdate').textContent = 'Actualisé à ' + new Date(updatedAt).toLocaleTimeString('fr-FR') + ' · 10 s';
+    var searching = !!document.getElementById('multiLoginSearch').value.trim();
     var settings = data.settings || {};
     if (!editing) {
       document.getElementById('multiLoginEnabled').checked = !!settings.enabled;
@@ -3111,7 +2995,7 @@ refreshAgents().then(function () {
       document.getElementById('multiLoginTimeout').value = settings.promptTimeoutSeconds || 45;
       document.getElementById('multiLoginExcluded').value = (settings.excludedUsers || []).join(', ');
     }
-    updateMultiLoginInputs();
+    updateMultiLoginInputs(); updateEditState();
     document.getElementById('multiLoginState').textContent = settings.enabled
       ? (settings.mode === 'prompt'
           ? 'Mode actif : proposer de fermer la session distante'
@@ -3125,25 +3009,25 @@ refreshAgents().then(function () {
     watcherState.style.color = (watcher.running === watcher.online && watcher.online > 0) ? '#155724' : '#6b5200';
     watcherState.title = (watcher.errors || []).map(function (item) { return item.name + ' : ' + item.error; }).join('\n');
 
-    var conflicts = data.conflicts || [];
+    var conflicts = (data.conflicts || []).filter(connectionMatches);
     var conflictCount = document.getElementById('multiLoginConflictCount');
     conflictCount.style.display = conflicts.length ? 'inline-block' : 'none';
     conflictCount.textContent = conflicts.length + ' conflit(s)';
-    document.getElementById('multiLoginConflicts').innerHTML = conflicts.length
+    stableHtml(document.getElementById('multiLoginConflicts'), conflicts.length
       ? conflicts.map(function (conflict) {
           return '<div class="multiLoginConflict"><b>' + escapeHtml(conflict.username) + '</b><br>'
             + conflict.sessions.map(function (session) {
                 return escapeHtml(session.mesh + ' — ' + session.name);
               }).join('<br>') + '</div>';
         }).join('')
-      : '<div class="empty">Aucun conflit actuellement détecté.</div>';
+      : '<div class="empty">' + (searching ? 'Aucun conflit correspondant à la recherche.' : 'Aucun conflit en cours.') + '</div>');
 
-    var conflictHistory = data.conflictHistory || [];
+    var conflictHistory = (data.conflictHistory || []).filter(connectionMatches);
     var conflictHistoryTotal = Number(data.conflictHistoryTotal || conflictHistory.length);
     var conflictRetentionDays = Number(data.conflictRetentionDays || 30);
     document.getElementById('multiLoginConflictHistoryTitle').textContent = 'Historique des conflits — conservation ' + conflictRetentionDays + ' jours (' + conflictHistoryTotal + ')';
-    document.getElementById('multiLoginConflictHistory').innerHTML = conflictHistory.length
-      ? '<div style="max-height:360px;overflow:auto"><table class="multiLoginTable"><thead><tr>'
+    stableHtml(document.getElementById('multiLoginConflictHistory'), conflictHistory.length
+      ? '<table class="multiLoginTable"><thead><tr>'
         + '<th>Utilisateur</th><th>Salles et postes concernés</th><th>Première détection</th><th>Dernière observation</th><th>Fin</th>'
         + '</tr></thead><tbody>'
         + conflictHistory.map(function (conflict) {
@@ -3157,40 +3041,53 @@ refreshAgents().then(function () {
               + '<td>' + escapeHtml(multiLoginFullDate(conflict.lastSeenAt)) + '</td>'
               + '<td>' + (conflict.endedAt ? escapeHtml(multiLoginFullDate(conflict.endedAt)) : '<b>En cours</b>') + '</td></tr>';
           }).join('')
-        + '</tbody></table></div>'
-        + (conflictHistoryTotal > conflictHistory.length ? '<div class="empty">Affichage limité aux ' + conflictHistory.length + ' conflits les plus récents sur ' + conflictHistoryTotal + ' conservés.</div>' : '')
-      : '<div class="empty">Aucun conflit conservé sur les ' + conflictRetentionDays + ' derniers jours.</div>';
+        + '</tbody></table>'
+        + (conflictHistoryTotal > (data.conflictHistory || []).length ? '<div class="empty">Affichage limité aux ' + conflictHistory.length + ' conflits affichés parmi les plus récents sur ' + conflictHistoryTotal + ' conservés.</div>' : '')
+      : '<div class="empty">' + (searching ? 'Aucun conflit correspondant à la recherche dans cet historique.' : 'Aucun conflit conservé sur les ' + conflictRetentionDays + ' derniers jours.') + '</div>');
 
-    var sessions = data.sessions || [];
-    document.getElementById('multiLoginSessions').innerHTML = sessions.length
+    var sessions = (data.sessions || []).filter(connectionMatches);
+    stableHtml(document.getElementById('multiLoginSessions'), sessions.length
       ? sessions.map(function (session) {
           return '<tr><td><b>' + escapeHtml(session.username) + '</b></td><td>' + escapeHtml(session.mesh)
             + '</td><td>' + escapeHtml(session.name) + '</td><td>' + multiLoginDate(session.updatedAt) + '</td></tr>';
         }).join('')
-      : '<tr><td colspan="4" class="empty">Aucune session utilisateur connue sur les agents en ligne.</td></tr>';
+      : '<tr><td colspan="4" class="empty">Aucune session correspondant à la recherche sur les agents en ligne.</td></tr>');
 
-    var events = data.events || [];
+    var events = (data.events || []).filter(connectionMatches);
     var eventTotal = Number(data.eventTotal || events.length);
     var eventRetentionDays = Number(data.eventRetentionDays || 30);
     document.getElementById('multiLoginEventsTitle').textContent = 'Journal des décisions — conservation ' + eventRetentionDays + ' jours (' + eventTotal + ')';
-    document.getElementById('multiLoginEvents').innerHTML = events.length
+    stableHtml(document.getElementById('multiLoginEvents'), events.length
       ? events.map(function (event) {
           return '<div class="multiLoginEvent"><b>' + multiLoginDate(event.time) + '</b> — '
             + escapeHtml(event.username || '') + ' — ' + escapeHtml(event.detail || event.kind || '') + '</div>';
-        }).join('') + (eventTotal > events.length ? '<div class="empty">Affichage limité aux ' + events.length + ' décisions les plus récentes sur ' + eventTotal + ' conservées.</div>' : '')
-      : '<div class="empty">Aucune décision conservée sur les ' + eventRetentionDays + ' derniers jours.</div>';
+        }).join('') + (eventTotal > (data.events || []).length ? '<div class="empty">Affichage limité aux ' + events.length + ' décisions affichées parmi les plus récentes sur ' + eventTotal + ' conservées.</div>' : '')
+      : '<div class="empty">' + (searching ? 'Aucune décision correspondant à la recherche dans ce journal.' : 'Aucune décision conservée sur les ' + eventRetentionDays + ' derniers jours.') + '</div>');
   }
 
-  function loadMultiLogin() {
-    return getJson(BASE + '&action=multiLoginStatus').then(function (data) {
-      renderMultiLogin(data);
-      loaded = true;
+  function loadMultiLogin(force) {
+    if (loading && force !== true) return loading;
+    var version = ++loadVersion;
+    document.getElementById('multiLoginRefreshBtn').disabled = true;
+    loading = getJson(BASE + '&action=multiLoginStatus').then(function (data) {
+      if (version !== loadVersion) return;
+      if (!data || data.error || !data.settings) throw new Error(data && data.error || 'État des connexions invalide');
+      lastData = data; updatedAt = Date.now(); loaded = true;
+      preserveMaintenanceView(function () { renderMultiLogin(data); });
     }).catch(function (error) {
-      document.getElementById('multiLoginState').textContent = 'Erreur : ' + error.message;
+      if (version === loadVersion) document.getElementById('multiLoginState').textContent = 'Erreur : ' + error.message + (lastData ? ' · dernières données conservées' : '');
+    }).then(function () {
+      if (version !== loadVersion) return;
+      loading = null; document.getElementById('multiLoginRefreshBtn').disabled = false;
     });
+    return loading;
   }
 
   function saveMultiLogin() {
+    if (saving || !lastData) return Promise.resolve();
+    var revision = editRevision;
+    saving = true; loadVersion++; loading = null;
+    updateEditState();
     var payload = {
       enabled: document.getElementById('multiLoginEnabled').checked,
       mode: selectedMultiLoginMode(),
@@ -3201,27 +3098,36 @@ refreshAgents().then(function () {
     };
     var button = document.getElementById('multiLoginSaveBtn');
     button.disabled = true;
-    getJson(BASE + '&action=multiLoginSave&payload=' + encodeURIComponent(JSON.stringify(payload))).then(function (result) {
+    return getJson(BASE + '&action=multiLoginSave&payload=' + encodeURIComponent(JSON.stringify(payload))).then(function (result) {
       if (!result.ok) throw new Error(result.error || 'enregistrement impossible');
-      editing = false;
-      return loadMultiLogin();
+      if (revision === editRevision) editing = false;
+      return loadMultiLogin(true);
     }).catch(function (error) {
       alert('Erreur : ' + error.message);
-    }).then(function () { button.disabled = false; });
+    }).then(function () { saving = false; updateEditState(); document.getElementById('multiLoginRefreshBtn').disabled = false; });
   }
 
   var tab = document.querySelector('.tab[data-tab="sessions"]');
   if (tab) tab.addEventListener('click', function () { loadMultiLogin(); });
-  document.getElementById('multiLoginRefreshBtn').addEventListener('click', function () { editing = false; loadMultiLogin(); });
+  document.getElementById('multiLoginRefreshBtn').addEventListener('click', function () { loadMultiLogin(); });
   document.getElementById('multiLoginSaveBtn').addEventListener('click', saveMultiLogin);
   ['multiLoginEnabled', 'multiLoginTimeout', 'multiLoginExcluded'].forEach(function (id) {
-    document.getElementById(id).addEventListener('change', function () { editing = true; updateMultiLoginInputs(); });
+    document.getElementById(id).addEventListener('input', function () { editing = true; editRevision++; updateMultiLoginInputs(); updateEditState(); });
   });
   Array.prototype.forEach.call(document.querySelectorAll('input[name="multiLoginMode"]'), function (input) {
-    input.addEventListener('change', function () { editing = true; updateMultiLoginInputs(); });
+    input.addEventListener('change', function () { editing = true; editRevision++; updateMultiLoginInputs(); updateEditState(); });
   });
+  document.getElementById('multiLoginResetBtn').addEventListener('click', function () {
+    if (!lastData || saving) return;
+    editing = false; editRevision++;
+    preserveMaintenanceView(function () { renderMultiLogin(lastData); });
+  });
+  document.getElementById('multiLoginSearch').addEventListener('input', function () {
+    if (lastData) preserveMaintenanceView(function () { renderMultiLogin(lastData); });
+  });
+  updateEditState();
   setInterval(function () {
-    if (loaded && document.getElementById('panel-sessions').classList.contains('active')) loadMultiLogin();
+    if (loaded && !saving && document.getElementById('panel-sessions').classList.contains('active')) loadMultiLogin();
   }, 10000);
 })();
 </script>

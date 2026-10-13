@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.0
+
+- Suppression complète du mode Examen dans l’interface, les routes serveur et le module agent. Les anciennes commandes HTTP renvoient une erreur 404 ; les verrouillages déjà présents dans Windows doivent être levés avant mise à jour (voir README).
+- Nouvelle présentation : accueil Santé du parc, compteurs d’alertes, navigation au clavier et disposition adaptée aux petits écrans.
+- Recherche par poste, salle ou modèle et filtre par salle dans Santé, appliqués à la fois aux cartes et aux alertes.
+- « Cocher la liste » respecte les mêmes filtres que les listes Nettoyage et Pilotes, y compris le système et le modèle. Le nettoyage reste désactivé tant qu’aucune tâche n’est cochée.
+- Actualisations Santé et Connexions sans remplacement des contenus identiques, avec conservation du défilement et des dernières données en cas d’erreur ; les requêtes périodiques ne se chevauchent plus.
+- Recherche dans les connexions, conflits et décisions ; protection des saisies non enregistrées pendant les actualisations et l’enregistrement, avec possibilité d’annuler les modifications du formulaire.
+- Conservation du fonctionnement du contrôle des connexions multiples et de son historique sur 30 jours. Ajout de tests automatisés sans commande Windows réelle.
+
 ## 0.14.24
 
 - Ajout d’un historique dédié des conflits de connexions multiples, conservé 30 jours même lorsque la règle de blocage est désactivée.

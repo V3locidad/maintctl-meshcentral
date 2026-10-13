@@ -1,9 +1,9 @@
 {
   "name": "maintctl",
   "shortName": "maintctl",
-  "version": "0.14.24",
+  "version": "0.15.0",
   "author": "V3locidad",
-  "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage, périphériques, drivers, santé, événements, registre, mode Examen et contrôle des connexions Windows simultanées sur plusieurs postes.",
+  "description": "Maintenance & dépannage Windows centralisé via MeshCentral : nettoyage, périphériques, drivers, santé, événements, registre et contrôle des connexions Windows simultanées sur plusieurs postes.",
   "hasAdminPanel": true,
   "homepage": "https://github.com/V3locidad/maintctl-meshcentral",
   "changelogUrl": "https://raw.githubusercontent.com/V3locidad/maintctl-meshcentral/main/changelog.md",
